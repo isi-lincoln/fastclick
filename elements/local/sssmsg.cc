@@ -1,4 +1,9 @@
+
+// click files
 #include <click/config.h>
+#include <click/args.hh> // Args, for configure
+
+// protocol files
 #include "sssmsg.hh"
 #include "sssproto.hh"
 
@@ -95,20 +100,49 @@ CLICK_DECLS
 SSSMsg::SSSMsg() { };
 SSSMsg::~SSSMsg() { };
 
+
+// allow the user to configure the shares and threshold amounts
+int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
+	uint8_t shares;
+	uint8_t threshold; 
+	if (Args(conf, this, errh)
+		.read_p("SHARES", shares) // positional
+		.read_p("THRESHOLD", threshold) // positional
+		.complete() < 0){
+			return -1;
+	}
+
+	// shares must be greater than or equal to threshold
+	if (threshold >= shares) {
+		// print error
+		return -1;
+	}
+
+	// number of shares must be greater than 1. Otherwise we are not sending packets.
+	// number of threshold must be greater than 2. Otherwise we are not encoding.
+	if (shares < 1 || threshold < 2) {
+		return -1;
+	}
+
+	_shares = shares;
+	_threshold = threshold;
+
+	return 0;
+}
+
 /*
  * Generates a SSSMsg packet from a packet.
  * 
  * Requires that the packet is IP, and has been checked.
+ * 
+ * So we recieve a packet, and we need create the encoded chunks
+ * then send that out to each of the connected ports.
  */
-Packet *SSSMsg::gen_pkt(Packet *p, uint8_t shares, uint8_t threshold) {
+void SSSMsg::push(int port, Packet *p) {
 
 	// TODO: packet length bounds check.
-	if p->length() > 8000 {
+	if (p->length() > 8000) {
 		// too large
-	}
-	// TODO: shares bound check
-	if shares > 15 || shares < 2 {
-		// too few/many shares
 	}
 
 	struct SSSProto ssspkt;
@@ -117,42 +151,59 @@ Packet *SSSMsg::gen_pkt(Packet *p, uint8_t shares, uint8_t threshold) {
 	// want this in order to get the ip address.
     	const click_ip *ip = reinterpret_cast<const click_ip *>(p->data());
 
+	struct SSSHeader hdr = ssspkt.Header;
+
 	// packet is the size of ip packet + size of our SSSHeader
-	ssspkt.Len = p->length()+sizeof(SSSHeader);
+	hdr.Len = p->length()+sizeof(SSSHeader)+sizeof(SSSProto);
 
 	// source ip address is the share host (originator of data)
-	// TODO: validate ip address
-	ssspkt.Sharehost = ip->ip_src.data();
+	hdr.Sharehost = ip->ip_src.s_addr;
 	
 	// initial version of protocol
-	ssspkt.Version = 0; 
+	hdr.Version = 0; 
 
 
 	// convert our ip packet from data into a string
-	std::string pkt_data;
+	char* pkt_data;
+	std::string str_pkt_data(pkt_data);
 	int rc = snprintf(pkt_data, p->length(), "%s", p->data());
 
-	// do the hard work to convert data to encoded forms
-	std::vector<std::string> encoded = SecretShareData(threshold, shares, pkt_data);
-	
-	// now lets create the shares
-	SSSProto pkt_shares[shares];
-	Packet *pkts[shares];
-	for (int i = 0; i < shares; ++i) {
-		ssspkt.Shareid = i;
-
-		// encoded has the same length as the original data
-		ssspkt.Data = encoded[i];
-
-        	memcpy(pkt_shares[i], ssspkt, ssspkt.Len);
-		pkts[i] = Packet::make(headroom, pkt_shares[i], sizeof(SSSProto), 0);
+	// handle an error 
+	if (rc > 0) {
 	}
 
-	return pkts;
+	// do the hard work to convert data to encoded forms
+	std::vector<std::string> encoded = SecretShareData(_threshold, _shares, str_pkt_data);
+	
+	// now lets create the shares
+	for (int i = 0; i < _shares; ++i) {
+		Packet *pkt;
+		hdr.Shareid = i;
+
+		// encoded has the same length as the original data
+		strcpy(ssspkt.Data, encoded[i].c_str());
+		//ssspkt.Data = encoded[i].c_str();
+
+		// TODO: i dont remember c
+        	memcpy(pkt, (void*)ssspkt, hdr.Len);
+		//Packet::make(headroom, pkt, sizeof(SSSProto), 0);
+
+		output(i).push(pkt);
+	}
+
+	// free this packet
+	p->kill();
+
+	return;
 };
 
-Packet *SSSMsg::simple_action(Packet *p) {
-	Packet *q = NULL;
+/*
+Packet **SSSMsg::simple_action(Packet *p, uint8_t shares, uint8_t threshold) {
+	Packet *q[shares];
+	for (int i = 0; i <shares; i++){
+		q[i] = NULL;
+	}
+
 	int len = strnlen((const char *) p->data(), p->length());
 
 	if (len > SSSPROTO_DATA_LEN)
@@ -167,7 +218,7 @@ Packet *SSSMsg::simple_action(Packet *p) {
 	click_chatter("DEBUG: p->data() = %s\tp->length() = %d", s.c_str(), p->length());
 
 	if (p->length() > 0 && p->length() <= SSSPROTO_DATA_LEN + 1)
-		q = gen_dummy_request(s);
+		q = gen_pkt(p,shares,threshold);
 	else
 		click_chatter("ERROR: Input packet is too big or 0-sized!");
 
@@ -175,6 +226,7 @@ Packet *SSSMsg::simple_action(Packet *p) {
 
 	return q;
 };
+*/
 
 CLICK_ENDDECLS
 ELEMENT_REQUIRES(userlevel)
