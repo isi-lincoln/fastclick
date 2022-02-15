@@ -103,9 +103,11 @@ SSSMsg::~SSSMsg() { };
 int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 	uint8_t shares;
 	uint8_t threshold; 
+    bool encrypt = true;
 	if (Args(conf, this, errh)
 		.read_mp("SHARES", shares) // positional
 		.read_mp("THRESHOLD", threshold) // positional
+		.read_mp("ENCRYPT", encrypt) // positional
 		.complete() < 0){
 			return -1;
 	}
@@ -124,30 +126,26 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 
 	_shares = shares;
 	_threshold = threshold;
+    _encrypt = encrypt;
 
 	return 0;
 }
 
+
 /*
- * Generates a SSSMsg packet from a packet.
- * 
- * Requires that the packet is IP, and has been checked.
- * 
- * So we recieve a packet, and we need create the encoded chunks
- * then send that out to each of the connected ports.
- */
-void SSSMsg::push(int port, Packet *p) {
+ * encrypt
+ *
+ * takes in a single packet, encodes it and forwards the
+ * encoded share out multiple interfaces.
+ *
+*/
 
-	// TODO: packet length bounds check.
-	if (p->length() > 8000) {
-		// too large
-	}
-
+void encrypt(int ports, Packet *p) {
 	struct SSSProto ssspkt;
 
 	// this packet is actually an ip packet wink wink.
 	// want this in order to get the ip address.
-    	const click_ip *ip = reinterpret_cast<const click_ip *>(p->data());
+    const click_ip *ip = reinterpret_cast<const click_ip *>(p->data());
 
 	struct SSSHeader hdr = ssspkt.Header;
 
@@ -188,6 +186,41 @@ void SSSMsg::push(int port, Packet *p) {
 
 		output(i).push(pkt);
 	}
+}
+
+
+/*
+ * decrypt
+ *
+ * takes in multiple encoded packet, decodes them, and sends a single
+ * message out the interface.
+ *
+*/
+void decrypt(int ports, Packet *p) {
+    // We need a map (storage) - to store packets until the messages come in.
+
+}
+
+/*
+ * Generates a SSSMsg packet from a packet.
+ * 
+ * Requires that the packet is IP, and has been checked.
+ * 
+ * So we recieve a packet, and we need create the encoded chunks
+ * then send that out to each of the connected ports.
+ */
+void SSSMsg::push(int ports, Packet *p) {
+
+	// TODO: packet length bounds check.
+	if (p->length() > 8000) {
+		// too large
+	}
+
+    if (_encrypt) {
+        encrypt(ports, p);
+    } else {
+        decrypt(ports, p);
+    }
 
 	// free this packet
 	p->kill();

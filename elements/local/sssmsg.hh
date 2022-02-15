@@ -20,6 +20,7 @@ class SSSMsg : public Element {
 	int headroom = sizeof(click_ether);
 	uint8_t _shares; // number of encoded packets to create/send
 	uint8_t _threshold; // number required by recv. to reconstruct
+    bool _encrypt; // should we be encrypting or decrypting
 
 	public:
 		SSSMsg();
