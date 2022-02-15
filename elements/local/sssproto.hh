@@ -3,7 +3,7 @@
 
 #define SSS_CLASSIFY_ANNO_OFFSET 4
 
-#define SSSPROTO_DATA_LEN 8000 // max length
+#define SSSPROTO_DATA_LEN 8191 // max length
 
 #define SSSPROTO_LEN_A 1 << 0
 #define SSSPROTO_LEN_B 1 << 1

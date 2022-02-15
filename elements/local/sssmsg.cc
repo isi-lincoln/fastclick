@@ -1,4 +1,3 @@
-
 // click files
 #include <click/config.h>
 #include <click/args.hh> // Args, for configure
@@ -6,7 +5,6 @@
 // protocol files
 #include "sssmsg.hh"
 #include "sssproto.hh"
-
 
 /*****   THIS IS THE CRYPTO SECTION *****/
 #include <iostream>
@@ -106,8 +104,8 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 	uint8_t shares;
 	uint8_t threshold; 
 	if (Args(conf, this, errh)
-		.read_p("SHARES", shares) // positional
-		.read_p("THRESHOLD", threshold) // positional
+		.read_mp("SHARES", shares) // positional
+		.read_mp("THRESHOLD", threshold) // positional
 		.complete() < 0){
 			return -1;
 	}
@@ -185,7 +183,7 @@ void SSSMsg::push(int port, Packet *p) {
 		//ssspkt.Data = encoded[i].c_str();
 
 		// TODO: i dont remember c
-        	memcpy(pkt, (void*)ssspkt, hdr.Len);
+        	memcpy(pkt, &ssspkt, hdr.Len);
 		//Packet::make(headroom, pkt, sizeof(SSSProto), 0);
 
 		output(i).push(pkt);
