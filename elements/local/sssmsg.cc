@@ -103,11 +103,11 @@ SSSMsg::~SSSMsg() { };
 int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 	uint8_t shares;
 	uint8_t threshold; 
-    bool encrypt = true;
+	uint8_t function;
 	if (Args(conf, this, errh)
 		.read_mp("SHARES", shares) // positional
 		.read_mp("THRESHOLD", threshold) // positional
-		.read_mp("ENCRYPT", encrypt) // positional
+		.read_mp("PURPOSE", function) // positional
 		.complete() < 0){
 			return -1;
 	}
@@ -126,7 +126,7 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 
 	_shares = shares;
 	_threshold = threshold;
-    _encrypt = encrypt;
+	_function = function;
 
 	return 0;
 }
@@ -140,12 +140,12 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
  *
 */
 
-void encrypt(int ports, Packet *p) {
+void SSSMsg::encrypt(int ports, Packet *p) {
 	struct SSSProto ssspkt;
 
 	// this packet is actually an ip packet wink wink.
 	// want this in order to get the ip address.
-    const click_ip *ip = reinterpret_cast<const click_ip *>(p->data());
+	const click_ip *ip = reinterpret_cast<const click_ip *>(p->data());
 
 	struct SSSHeader hdr = ssspkt.Header;
 
@@ -157,6 +157,8 @@ void encrypt(int ports, Packet *p) {
 	
 	// initial version of protocol
 	hdr.Version = 0; 
+
+	hdr.Flowid = _flowid++; // see notes on randomizing this for fun
 
 
 	// convert our ip packet from data into a string
@@ -196,9 +198,72 @@ void encrypt(int ports, Packet *p) {
  * message out the interface.
  *
 */
-void decrypt(int ports, Packet *p) {
-    // We need a map (storage) - to store packets until the messages come in.
+void SSSMsg::decrypt(int ports, Packet *p) {
+	// We need a map (storage) - to store packets until the messages come in.
 
+	// this packet is actually an ip packet wink wink.
+	// want this in order to get the ip address.
+	const SSSProto ssspkt = reinterpret_cast<const SSSProto *>(p->data());
+
+	// check if this thing is in our storage queue
+	auto t = storage.find(hdr.Sharehost);
+
+	// TODO: get into trouble in multithread with end pointer changing?
+	// not found
+	if (t == storage.end()) {
+		storage.insert(hdr.Sharehost, {hdr.Flowid, ssspkt});
+		return;
+	}
+
+	// this is the container/map for this host
+	auto host_map = t.at(hdr.Sharehost);
+	auto flowid = host_map.find(hdr.Flowid);
+
+	// map exists but there is no flowid, so add it
+	if (flowid == host_map.end()) {
+		storage.insert(hdr.Sharehost, {hdr.Flowid, ssspkt});
+		return;
+	}
+
+	// flowids do exist in the map, so check if we need to append ours
+	// or if we are ready to do some computation
+	//
+	// including this packet, we still do not have enough to compute 
+	if host_map.count(flowid)+1 < _threshold {
+		storage.insert(hdr.Sharehost, {hdr.Flowid, ssspkt});
+		return;
+	}
+
+
+	// we have enough to compute, create vector of the data
+	std::vector<std::string> encoded;
+	encoded.push_back(ssspkt->data());
+
+	for (auto x : host_map.find(flowid)) {
+		encoded.push_back(x->data());
+	}
+
+	// get back the secret
+	std::string pkt_data = SecretRecoverData(_threshold, encoded) {
+	
+	// cast the secret back to the original click ip packet
+	const click_ip *ip= reinterpret_cast<const click_ip *>(p->data());
+
+	// ship it
+	output(0).push(ip);
+
+}
+
+// TODO
+void SSSMsg::forward(int ports, Packet *p) {
+	// check the sssmsg header and forward out all other interfaces
+	// todo on specifying which interfaces
+}
+
+// TODO random generation
+// TODO bounds checking on overflow - does this matter? we will force app to manage staleness
+void SSSMsg::initialize(ErrorHandler *errh) {
+	_flowid = 0; // shits and giggles we just always random this, 2**32 on collision for good times
 }
 
 /*
@@ -216,10 +281,14 @@ void SSSMsg::push(int ports, Packet *p) {
 		// too large
 	}
 
-    if (_encrypt) {
+    if (_function == 0) {
         encrypt(ports, p);
-    } else {
+    } else if (_function == 1 ) {
         decrypt(ports, p);
+    } else if (_function == 2 ) {
+    	forward(ports, p);
+    } else {
+    	// panic
     }
 
 	// free this packet
@@ -227,37 +296,6 @@ void SSSMsg::push(int ports, Packet *p) {
 
 	return;
 };
-
-/*
-Packet **SSSMsg::simple_action(Packet *p, uint8_t shares, uint8_t threshold) {
-	Packet *q[shares];
-	for (int i = 0; i <shares; i++){
-		q[i] = NULL;
-	}
-
-	int len = strnlen((const char *) p->data(), p->length());
-
-	if (len > SSSPROTO_DATA_LEN)
-		len = SSSPROTO_DATA_LEN;
-	
-	String s = String(p->data(), len);
-	int delta = SSSPROTO_DATA_LEN - len;
-
-	if (delta > 0)
-		s.append_fill('\0', delta);
-
-	click_chatter("DEBUG: p->data() = %s\tp->length() = %d", s.c_str(), p->length());
-
-	if (p->length() > 0 && p->length() <= SSSPROTO_DATA_LEN + 1)
-		q = gen_pkt(p,shares,threshold);
-	else
-		click_chatter("ERROR: Input packet is too big or 0-sized!");
-
-	p->kill();
-
-	return q;
-};
-*/
 
 CLICK_ENDDECLS
 ELEMENT_REQUIRES(userlevel)
