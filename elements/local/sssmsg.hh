@@ -2,12 +2,14 @@
 #define CLICK_SSSMSG__HH
 
 #include <unordered_map>
+#include <vector>
 
 #include <click/element.hh>
 #include <clicknet/ether.h>
 #include <clicknet/udp.h>
 
-//using namespace std;
+#include "sssproto.hh"
+using namespace std;
 
 CLICK_DECLS
 
@@ -35,18 +37,19 @@ class SSSMsg : public Element {
 
 	/* will use this to store packets for decryption */
 	// < host >: <id, pkt>
-    	std::unordered_map<uint32_t, std::unordered_map<uint32_t, SSSProto>> storage; 
+    	std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<const SSSProto*> > > storage; 
 
 	public:
 		SSSMsg();
 		~SSSMsg();
 
 		const char *class_name() const { return "SSSMsg"; }
-		const char *port_count() const { return "PORTS_1_1X2"; }
-		const char *processing() const { return "h"; } // push processing
+		const char *port_count() const { return "1+/1+"; } // depending on directionality, 1/3+ or 3+/1
+		const char *processing() const { return PUSH; } // push processing
 
 		// for settings of element when creating it e.g., SSMsg(3,2)
 		int configure(Vector<String> &conf, ErrorHandler *errh);
+		int initialize(ErrorHandler *errh);
 
 		// push required for push element (see processing)
 		void push(int port, Packet *p);
@@ -54,6 +57,7 @@ class SSSMsg : public Element {
 		// make these public functions to inherit members
 		void encrypt(int port, Packet *p);
 		void decrypt(int port, Packet *p);
+		void forward(int port, Packet *p);
 };
 
 CLICK_ENDDECLS

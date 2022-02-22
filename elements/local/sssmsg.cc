@@ -141,24 +141,29 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 */
 
 void SSSMsg::encrypt(int ports, Packet *p) {
-	struct SSSProto ssspkt;
+	struct SSSProto *ssspkt;
 
-	// this packet is actually an ip packet wink wink.
-	// want this in order to get the ip address.
+	// taking as input a Packet
+	// this packet has an ethernet header which we want to keep for decrypt
+	// it also has the ip header, and the data contents.
+	// we would ideally like to keep all this entact, then decrypt can fudge
+	// the headers and checksum
+
+	// we want to retrieve the ip header information, mainly the ipv4 dest
 	const click_ip *ip = reinterpret_cast<const click_ip *>(p->data());
 
-	struct SSSHeader hdr = ssspkt.Header;
-
-	// packet is the size of ip packet + size of our SSSHeader
-	hdr.Len = p->length()+sizeof(SSSHeader)+sizeof(SSSProto);
+	// our packet then will be the previous packet (p)
+	// plus the size of the sssheader plus the size of the protocol
+	// message header.
+	ssspkt->Len = p->length()+sizeof(SSSProto);
 
 	// source ip address is the share host (originator of data)
-	hdr.Sharehost = ip->ip_src.s_addr;
+	ssspkt->Sharehost = ip->ip_src.s_addr;
 	
 	// initial version of protocol
-	hdr.Version = 0; 
+	ssspkt->Version = 0; 
 
-	hdr.Flowid = _flowid++; // see notes on randomizing this for fun
+	ssspkt->Flowid = _flowid++; // see notes on randomizing this for fun
 
 
 	// convert our ip packet from data into a string
@@ -168,6 +173,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
 	// handle an error 
 	if (rc > 0) {
+		return;
 	}
 
 	// do the hard work to convert data to encoded forms
@@ -176,16 +182,16 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 	// now lets create the shares
 	for (int i = 0; i < _shares; ++i) {
 		Packet *pkt;
-		hdr.Shareid = i;
+		ssspkt->Shareid = i;
 
 		// encoded has the same length as the original data
-		strcpy(ssspkt.Data, encoded[i].c_str());
-		//ssspkt.Data = encoded[i].c_str();
+		strcpy(ssspkt->Data, encoded[i].c_str());
 
-		// TODO: i dont remember c
-        	memcpy(pkt, &ssspkt, hdr.Len);
-		//Packet::make(headroom, pkt, sizeof(SSSProto), 0);
+		// we would like this to work, which is to copy our encoded data back into the
+		// the packet to send out
+        	memcpy((void*)pkt->data(), ssspkt, ssspkt->Len);
 
+		// send packet out the given port
 		output(i).push(pkt);
 	}
 }
@@ -199,29 +205,28 @@ void SSSMsg::encrypt(int ports, Packet *p) {
  *
 */
 void SSSMsg::decrypt(int ports, Packet *p) {
-	// We need a map (storage) - to store packets until the messages come in.
 
-	// this packet is actually an ip packet wink wink.
-	// want this in order to get the ip address.
-	const SSSProto ssspkt = reinterpret_cast<const SSSProto *>(p->data());
+	// following from when we encoded our data and put our sss data into
+	// the pkt data field, we now need to extract it
+	const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(p->data());
 
-	// check if this thing is in our storage queue
-	auto t = storage.find(hdr.Sharehost);
+	// check if this packet destination is already in our storage queue
+	auto t = storage.find(ssspkt->Sharehost);
 
 	// TODO: get into trouble in multithread with end pointer changing?
 	// not found
 	if (t == storage.end()) {
-		storage.insert(hdr.Sharehost, {hdr.Flowid, ssspkt});
+		storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(ssspkt);
 		return;
 	}
 
 	// this is the container/map for this host
-	auto host_map = t.at(hdr.Sharehost);
-	auto flowid = host_map.find(hdr.Flowid);
+	auto host_map = storage.at(ssspkt->Sharehost);
+	auto flowid = host_map.find(ssspkt->Flowid);
 
 	// map exists but there is no flowid, so add it
 	if (flowid == host_map.end()) {
-		storage.insert(hdr.Sharehost, {hdr.Flowid, ssspkt});
+		storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(ssspkt);
 		return;
 	}
 
@@ -229,28 +234,31 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 	// or if we are ready to do some computation
 	//
 	// including this packet, we still do not have enough to compute 
-	if host_map.count(flowid)+1 < _threshold {
-		storage.insert(hdr.Sharehost, {hdr.Flowid, ssspkt});
+	//
+	if (storage[ssspkt->Sharehost][ssspkt->Flowid].size()+1 < _threshold) {
+		storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(ssspkt);
 		return;
 	}
 
 
 	// we have enough to compute, create vector of the data
 	std::vector<std::string> encoded;
-	encoded.push_back(ssspkt->data());
+	encoded.push_back(ssspkt->Data);
 
-	for (auto x : host_map.find(flowid)) {
-		encoded.push_back(x->data());
+	for (auto x : storage[ssspkt->Sharehost][ssspkt->Flowid]) {
+		encoded.push_back(x->Data);
 	}
 
 	// get back the secret
-	std::string pkt_data = SecretRecoverData(_threshold, encoded) {
+	std::string pkt_data = SecretRecoverData(_threshold, encoded);
+
+	// attempt to cast the pkt_data back to the packet
+	// TODO this
+        memcpy((void*)p->data(), (void*)pkt_data.c_str(), p->length());
 	
-	// cast the secret back to the original click ip packet
-	const click_ip *ip= reinterpret_cast<const click_ip *>(p->data());
 
 	// ship it
-	output(0).push(ip);
+	output(0).push(p);
 
 }
 
@@ -258,12 +266,14 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 void SSSMsg::forward(int ports, Packet *p) {
 	// check the sssmsg header and forward out all other interfaces
 	// todo on specifying which interfaces
+	output(0).push(p);
 }
 
 // TODO random generation
 // TODO bounds checking on overflow - does this matter? we will force app to manage staleness
-void SSSMsg::initialize(ErrorHandler *errh) {
+int SSSMsg::initialize(ErrorHandler *errh) {
 	_flowid = 0; // shits and giggles we just always random this, 2**32 on collision for good times
+	return 0;
 }
 
 /*
