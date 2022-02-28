@@ -44,7 +44,7 @@ class SSSMsg : public Element {
 		~SSSMsg();
 
 		const char *class_name() const { return "SSSMsg"; }
-		const char *port_count() const { return "1+/1+"; } // depending on directionality, 1/3+ or 3+/1
+		const char *port_count() const { return "1-/1-"; } // depending on directionality, 1/3+ or 3+/1
 		const char *processing() const { return PUSH; } // push processing
 
 		// for settings of element when creating it e.g., SSMsg(3,2)
