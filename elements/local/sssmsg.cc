@@ -3,8 +3,8 @@
 #include <click/args.hh> // Args, for configure
 
 // protocol files
-#include "sssmsg.hh"
 #include "sssproto.hh"
+#include "sssmsg.hh"
 
 /*****   THIS IS THE CRYPTO SECTION *****/
 #include <iostream>
@@ -18,8 +18,8 @@
 #include <cryptopp/secblock.h>  // SecBlock
 #include <cryptopp/files.h> // FileSource
  
-using namespace std;
-using namespace CryptoPP;
+//using namespace std;
+//using namespace CryptoPP;
 
 std::vector<std::string> SecretShareData(int threshold, int nShares, std::string secret) {
 	// rng
@@ -46,18 +46,18 @@ std::vector<std::string> SecretShareData(int threshold, int nShares, std::string
 
 	// from ida example, just use string instead of vector
 	std::vector<std::string> strShares(nShares);
-	vector_member_ptrs<StringSink> strSinks(nShares);
+	CryptoPP::vector_member_ptrs<CryptoPP::StringSink> strSinks(nShares);
 
 	std::string channel;
 
 	// based on the number of shares to generate, we know go through and do the computation
 	for (int i = 0; i < nShares; i++)	{
 		// creates a new StringSink set to shares[i]
-		strSinks[i].reset(new StringSink(strShares[i]));
+		strSinks[i].reset(new CryptoPP::StringSink(strShares[i]));
 
-		channel = CryptoPP::WordToString<word32>(i);
+		channel = CryptoPP::WordToString<CryptoPP::word32>(i);
         	strSinks[i]->Put( (CryptoPP::byte *)channel.data(), 4 ); // 4 because 32/8 is 4
- 		channelSwitch->AddRoute( channel,*strSinks[i], DEFAULT_CHANNEL );
+		channelSwitch->AddRoute( channel,*strSinks[i], CryptoPP::DEFAULT_CHANNEL );
 	}
 
 	source.PumpAll();
@@ -67,15 +67,15 @@ std::vector<std::string> SecretShareData(int threshold, int nShares, std::string
 
 std::string SecretRecoverData(int threshold, std::vector<std::string> shares) {
 	std::string secret;
-	CryptoPP::SecretRecovery recovery(threshold, new StringSink(secret));
+	CryptoPP::SecretRecovery recovery(threshold, new CryptoPP::StringSink(secret));
 
-	vector_member_ptrs<StringSource> strSources(threshold);
+	CryptoPP::vector_member_ptrs<CryptoPP::StringSource> strSources(threshold);
 
 	CryptoPP::SecByteBlock channel(4);
 	int i;
 	for (i=0; i<threshold; i++)
 	{
-		strSources[i].reset(new StringSource(shares[i], false));
+		strSources[i].reset(new CryptoPP::StringSource(shares[i], false));
 		strSources[i]->Pump(4);
 		strSources[i]->Get(channel, 4);
 		strSources[i]->Attach(new CryptoPP::ChannelSwitch(recovery, std::string((char *)channel.begin(), 4)));
@@ -90,6 +90,7 @@ std::string SecretRecoverData(int threshold, std::vector<std::string> shares) {
 
 	return secret;
 }
+
 /*****   THIS IS END CRYPTO SECTION *****/
 
 

@@ -9,7 +9,7 @@
 #include <clicknet/udp.h>
 
 #include "sssproto.hh"
-using namespace std;
+//using namespace std;
 
 CLICK_DECLS
 
