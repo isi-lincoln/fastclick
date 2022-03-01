@@ -1,14 +1,16 @@
 // address info for each of the interfaces
-AddressInfo(
-	eth1-dev	192.168.0.100	192.168.0.0/24	04:70:00:00:00:01,
-	eth2-dev	10.0.0.1	10.0.0.0/24	04:70:00:00:00:10,
-	eth3-dev	10.0.1.1	10.0.1.0/24	04:70:00:00:00:20,
-	eth4-dev	10.0.2.1	10.0.2.0/24	04:70:00:00:00:30,
 
-	eth1-neigh	192.168.0.1	192.168.0.0/24	04:70:00:00:01:01,
-	eth2-neigh	10.0.0.2	10.0.0.0/24	04:70:00:00:00:11,
-	eth3-neigh	10.0.1.2	10.0.1.0/24	04:70:00:00:00:21,
-	eth4-neigh	10.0.2.2	10.0.2.0/24	04:70:00:00:00:31,
+// config file for device b
+AddressInfo(
+	eth1-dev	192.168.0.101	192.168.0.0/24	04:70:00:00:00:02,
+	eth2-dev	10.0.0.2	10.0.0.0/24	04:70:00:00:00:11,
+	eth3-dev	10.0.1.2	10.0.1.0/24	04:70:00:00:00:21,
+	eth4-dev	10.0.2.2	10.0.2.0/24	04:70:00:00:00:31,
+
+	eth1-neigh	192.168.0.2	192.168.0.0/24	04:70:00:00:02:01,
+	eth2-neigh	10.0.0.1	10.0.0.0/24	04:70:00:00:00:10,
+	eth3-neigh	10.0.1.1	10.0.1.0/24	04:70:00:00:00:20,
+	eth4-neigh	10.0.2.1	10.0.2.0/24	04:70:00:00:00:30,
 );
 
 classifier0	:: Classifier(
@@ -32,7 +34,7 @@ classifier3	:: Classifier(
 	);
 
 ipclassifier	:: IPClassifier(
-	dst host 192.168.0.2
+	dst host 192.168.0.1
 	);
 
 data_in			::	FromDevice(eth1);
@@ -58,7 +60,7 @@ decrypt	:: SSSMsg(3,2,1);
 
 /* handle the arp requests */
 
-data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.2 192.168.0.0/24 04:70:00:00:02:01)	->	q1;
+data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.1 192.168.0.0/24 04:70:00:00:01:01)	->	q1;
 
 left_in_device	->	classifier1[0]	->	Print("b")	->	ARPResponder(10.0.0.1 10.0.0.0/24 04:70:00:00:00:10)	->	q2;
 center_in_device ->	classifier2[0]	->	Print("c")	->	ARPResponder(10.0.1.1 10.0.1.0/24 04:70:00:00:00:20)	->	q3;
@@ -68,7 +70,7 @@ right_in_device ->	classifier3[0]	->	Print("d")	->	ARPResponder(10.0.2.1 10.0.2.
 // if this is an ip packet
 // and it is dest host y -> rewrite the eth header now
 // then send it to SSS, 3 shares, 2 threshold, and set option to encrypt
-classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]	->	IPPrint("ip pkt")	->	EtherRewrite(04:70:00:00:00:02, 04:70:00:00:02:01)	->	encrypt;
+classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]	->	IPPrint("ip pkt")	->	EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)	->	encrypt;
 
 // then these will be the encoded chunks
 encrypt[0]	->	q2;
