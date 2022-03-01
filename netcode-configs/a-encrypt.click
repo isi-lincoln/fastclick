@@ -18,14 +18,17 @@ classifier0	:: Classifier(
 
 classifier1	:: Classifier(
 	12/0806 20/0001, /* arp requests */
+	-,
 	);
 
 classifier2	:: Classifier(
 	12/0806 20/0001, /* arp requests */
+	-,
 	);
 
 classifier3	:: Classifier(
 	12/0806 20/0001, /* arp requests */
+	-,
 	);
 
 ipclassifier	:: IPClassifier(
@@ -50,24 +53,36 @@ q4	:: ThreadSafeQueue(200);
 chip	:: MarkIPHeader(14);
 
 encrypt	:: SSSMsg(3,2,0);
+decrypt	:: SSSMsg(3,2,1);
 
 
 /* handle the arp requests */
-data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.1 192.168.0.0/24 04:70:00:00:02:01)	->	q1;
 
-left_in_device	->	classifier1	->	Print("b")	->	ARPResponder(10.0.0.1 10.0.0.0/24 04:70:00:00:00:10)	->	q2;
-center_in_device ->	classifier2	->	Print("c")	->	ARPResponder(10.0.1.1 10.0.1.0/24 04:70:00:00:00:20)	->	q3;
-right_in_device ->	classifier3	->	Print("d")	->	ARPResponder(10.0.2.1 10.0.2.0/24 04:70:00:00:00:30)	->	q4;
+data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.2 192.168.0.0/24 04:70:00:00:02:01)	->	q1;
+
+left_in_device	->	classifier1[0]	->	Print("b")	->	ARPResponder(10.0.0.1 10.0.0.0/24 04:70:00:00:00:10)	->	q2;
+center_in_device ->	classifier2[0]	->	Print("c")	->	ARPResponder(10.0.1.1 10.0.1.0/24 04:70:00:00:00:20)	->	q3;
+right_in_device ->	classifier3[0]	->	Print("d")	->	ARPResponder(10.0.2.1 10.0.2.0/24 04:70:00:00:00:30)	->	q4;
+
 
 // if this is an ip packet
 // and it is dest host y -> rewrite the eth header now
 // then send it to SSS, 3 shares, 2 threshold, and set option to encrypt
-classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]		->	EtherRewrite(04:70:00:00:00:02, 04:70:00:00:02:01)	->	encrypt;
+classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]	->	IPPrint("ip pkt")	->	EtherRewrite(04:70:00:00:00:02, 04:70:00:00:02:01)	->	encrypt;
 
 // then these will be the encoded chunks
 encrypt[0]	->	q2;
 encrypt[1]	->	q3;
 encrypt[2]	->	q4;
+
+
+// if the packet is coming over one of or other links, it means its already encrypted and ready to be decrypted.
+classifier1[1]	->	decrypt;
+classifier2[1]	->	decrypt;
+classifier3[1]	->	decrypt;
+
+
+decrypt	->	q1;
 
 // now send out everything from our queues
 q1	->	data_out;
