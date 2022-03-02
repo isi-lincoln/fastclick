@@ -62,9 +62,9 @@ decrypt	:: SSSMsg(3,2,1);
 
 data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.1 192.168.0.0/24 04:70:00:00:01:01)	->	q1;
 
-left_in_device	->	Print("zz")	->	classifier1[0]	->	Print("b")	->	ARPResponder(10.0.0.1 10.0.0.0/24 04:70:00:00:00:10)	->	q2;
-center_in_device ->	Print("zzz")	->	classifier2[0]	->	Print("c")	->	ARPResponder(10.0.1.1 10.0.1.0/24 04:70:00:00:00:20)	->	q3;
-right_in_device ->	Print("zzzz")	->	classifier3[0]	->	Print("d")	->	ARPResponder(10.0.2.1 10.0.2.0/24 04:70:00:00:00:30)	->	q4;
+left_in_device	->	classifier1[0]	->	Print("b")	->	ARPResponder(10.0.0.1 10.0.0.0/24 04:70:00:00:00:10)	->	q2;
+center_in_device ->	classifier2[0]	->	Print("c")	->	ARPResponder(10.0.1.1 10.0.1.0/24 04:70:00:00:00:20)	->	q3;
+right_in_device ->	classifier3[0]	->	Print("d")	->	ARPResponder(10.0.2.1 10.0.2.0/24 04:70:00:00:00:30)	->	q4;
 
 
 // if this is an ip packet
@@ -79,12 +79,12 @@ encrypt[2]	->	q4;
 
 
 // if the packet is coming over one of or other links, it means its already encrypted and ready to be decrypted.
-classifier1[1]	->	Print("z")	->	decrypt;
-classifier2[1]	->	Print("y")	->	decrypt;
-classifier3[1]	->	Print("x")	->	decrypt;
+classifier1[1]	->	EtherRewrite(04:70:00:00:00:11, 04:70:00:00:00:10)      ->	decrypt;
+classifier2[1]	->	EtherRewrite(04:70:00:00:00:21, 04:70:00:00:00:20)      ->	decrypt;
+classifier3[1]	->	EtherRewrite(04:70:00:00:00:31, 04:70:00:00:00:30)      ->	decrypt;
 
 
-decrypt	->	q1;
+decrypt	->	EtherRewrite(04:70:00:00:00:02, 04:70:00:00:02:01)	->	q1;
 
 // now send out everything from our queues
 q1	->	data_out;
