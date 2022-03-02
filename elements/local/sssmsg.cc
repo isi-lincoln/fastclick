@@ -11,6 +11,7 @@
 
 // handling shared cache
 //#include <mutex>          // std::mutex
+#include <assert.h>	// sanity check
 
 /*****   THIS IS THE CRYPTO SECTION *****/
 #include <iostream>
@@ -187,9 +188,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     // plus the size of the sssheader plus the size of the protocol
     // message header.
     // TODO: the math here that needs to happen is subtract out the L3->data() field.
-    unsigned long length = p->length()+sizeof(SSSProto);
-    //printf("orig length: %d\n", p->length());
-    //printf("sss length: %d\n", ssspkt->Len);
+    unsigned long length = p->length();
 
     // source ip address is the share host (originator of data)
     // ip_src is in_addr struct
@@ -210,6 +209,8 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     // do the hard work to convert data to encoded forms
     std::vector<std::string> encoded = SecretShareData(_threshold, _shares, str_pkt_data);
+    std::string rec_pkt_data = SecretRecoverData(_threshold, encoded);
+    assert(str_pkt_data==rec_pkt_data);
 
     printf("after encrypt, encode length: %ld\n", encoded.size());
     
@@ -229,7 +230,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
         // we would like this to work, which is to copy our encoded data back into the
         // the packet to send out
-        Packet *pkt = Packet::make(ssspkt_arr[i], ssspkt_arr[i]->Len+14);
+        Packet *pkt = Packet::make(ssspkt_arr[i], sizeof(SSSProto)+14);
     
         
         // remove some head room from packet to add L2 and L3 headers
@@ -339,8 +340,9 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // we have enough to compute, create vector of the data
     std::vector<std::string> encoded;
     encoded.push_back(ssspkt->Data);
-
+    long length = 0;
     for (auto x : storage[ssspkt->Sharehost][ssspkt->Flowid]) {
+	length = x->Len;
         encoded.push_back(x->Data);
     }
 
@@ -349,11 +351,14 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // attempt to cast the pkt_data back to the packet
     // TODO this
-    memcpy((void*)p->data(), (void*)pkt_data.c_str(), p->length());
-    
+    //memcpy((void*)p->data()+14, , length);
+    Packet *pkt = Packet::make((void*)pkt_data.c_str(),length);
+
+    Packet *new_pkt = pkt->push_mac_header(14);
+    memcpy((void*)new_pkt->data(), mach, 14);
 
     // ship it
-    output(0).push(p);
+    output(0).push(new_pkt);
 
 }
 
