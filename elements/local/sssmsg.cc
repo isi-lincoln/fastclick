@@ -12,6 +12,7 @@
 // handling shared cache
 //#include <mutex>          // std::mutex
 #include <assert.h>	// sanity check
+#include<iostream>
 
 /*****   THIS IS THE CRYPTO SECTION *****/
 #include <iostream>
@@ -29,6 +30,8 @@
 //using namespace CryptoPP;
 
 std::vector<std::string> SecretShareData(int threshold, int nShares, std::string secret) {
+
+    printf("secret: %s\n", secret.c_str());
     // rng
     CryptoPP::AutoSeededRandomPool rng;
     
@@ -65,9 +68,12 @@ std::vector<std::string> SecretShareData(int threshold, int nShares, std::string
         channel = CryptoPP::WordToString<CryptoPP::word32>(i);
             strSinks[i]->Put( (CryptoPP::byte *)channel.data(), 4 ); // 4 because 32/8 is 4
         channelSwitch->AddRoute( channel,*strSinks[i], CryptoPP::DEFAULT_CHANNEL );
+
+	//printf("in encrypt: %s\n", strShares[i].c_str());
     }
 
     source.PumpAll();
+    printf("in encrypt: %s\n", strShares[0].c_str());
 
     return strShares;
 }
@@ -203,9 +209,26 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     // convert our ip packet from data into a string
     // jesus pray for us
-    std::string str_pkt_data(reinterpret_cast<const char*>(p->data()));
+    char char_pkt_data[p->length()*2];
 
-    printf("after ssspkt to data \n");
+
+    // TODO: I dont fully understand this, it shouldnt work:
+    // https://github.com/kohler/click/blob/593d10826cf5f945a78307d095ffb0897de515de/elements/standard/print.cc#L151
+    // basically i think char_pkt_data should be p->length, (98 bytes), but with this it is 2x that
+    // but it matches what i see on the wire with -vvvxxx options..
+    printf("pkt length: %u\n", p->length());
+    const unsigned char *bdata = p->data();
+    uint16_t iter = 0;
+    for (int j=0; j < p->length(); j++, bdata++) {
+      sprintf(char_pkt_data+iter, "%02x", *bdata & 0xff);
+      iter += 2;
+    }
+
+    std::string str_pkt_data(reinterpret_cast<char*>(char_pkt_data));
+
+    //printf("after ssspkt to data: %x \n", str_pkt_data.c_str());
+    printf("pkt length: %lu, pkt data: %s\n", str_pkt_data.length(), str_pkt_data.c_str()); 
+    //std::cout << str_pkt_data << "\n";
 
     // do the hard work to convert data to encoded forms
     std::vector<std::string> encoded = SecretShareData(_threshold, _shares, str_pkt_data);
@@ -227,6 +250,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
         // encoded has the same length as the original data
         strcpy(ssspkt_arr[i]->Data, encoded[i].c_str());
+	printf("encoded: %s\n", encoded[i].c_str());
 
         // we would like this to work, which is to copy our encoded data back into the
         // the packet to send out

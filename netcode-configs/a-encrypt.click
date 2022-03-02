@@ -58,7 +58,7 @@ decrypt	:: SSSMsg(3,2,1);
 
 /* handle the arp requests */
 
-data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.2 192.168.0.0/24 04:70:00:00:02:01)	->	q1;
+data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.2 192.168.0.0/24 04:70:00:00:00:01)	->	q1;
 
 left_in_device	->	classifier1[0]	->	Print("b")	->	ARPResponder(10.0.0.1 10.0.0.0/24 04:70:00:00:00:10)	->	q2;
 center_in_device ->	classifier2[0]	->	Print("c")	->	ARPResponder(10.0.1.1 10.0.1.0/24 04:70:00:00:00:20)	->	q3;
