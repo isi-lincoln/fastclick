@@ -236,8 +236,8 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 	//pkt->set_network_header(nhd);
 
         // send packet out the given port
-        //output(i).push(newpkt);
-        output(i).push(pkt);
+        output(i).push(new_pkt);
+        //output(i).push(pkt);
 
 	// TODO: I forget C memory management, can i free pkt now that output has it
 	// or is it only a pointer so i have to wait until output frees it and then

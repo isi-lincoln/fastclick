@@ -68,12 +68,12 @@ right_in_device ->	classifier3[0]	->	Print("d")	->	ARPResponder(10.0.2.1 10.0.2.
 // if this is an ip packet
 // and it is dest host y -> rewrite the eth header now
 // then send it to SSS, 3 shares, 2 threshold, and set option to encrypt
-classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]	->	IPPrint("ip pkt")	->	EtherRewrite(04:70:00:00:00:02, 04:70:00:00:02:01)	->	encrypt;
+classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]	->	IPPrint("ip pkt")	->	encrypt;
 
 // then these will be the encoded chunks
-encrypt[0]	->	q2;
-encrypt[1]	->	q3;
-encrypt[2]	->	q4;
+encrypt[0]	->	EtherRewrite(04:70:00:00:00:10, 04:70:00:00:00:11)	->	q2;
+encrypt[1]	->	EtherRewrite(04:70:00:00:00:20, 04:70:00:00:00:21)	->	q3;
+encrypt[2]	->	EtherRewrite(04:70:00:00:00:30, 04:70:00:00:00:31)	->	q4;
 
 
 // if the packet is coming over one of or other links, it means its already encrypted and ready to be decrypted.
@@ -82,7 +82,7 @@ classifier2[1]	->	decrypt;
 classifier3[1]	->	decrypt;
 
 
-decrypt	->	q1;
+decrypt	->	EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)	->	q1;
 
 // now send out everything from our queues
 q1	->	data_out;
