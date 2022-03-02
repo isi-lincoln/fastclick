@@ -148,6 +148,24 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     // TODO: reminder we are allocating memory here, so we need to tear down at end of function
     struct SSSProto *ssspkt = new SSSProto;
 
+    // packet is too large
+    if (p->length() > SSSPROTO_DATA_LEN) {
+	fprintf(stderr, "packet length too large for secret splitting\n");
+    	return;
+    }
+
+    // saftey checks
+    if (!p->has_mac_header()) {
+	fprintf(stderr, "secret split doesnt know how to handle this packet (no L2).\n");
+    }
+
+    if (!p->has_network_header()) {
+	fprintf(stderr, "secret split doesnt know how to handle this packet (no L3).\n");
+    }
+
+    // XXX: We assume that the click config will handle the MAC rewriting for now
+    //
+
     printf("in encrypt\n");
 
     // taking as input a Packet
@@ -157,7 +175,9 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     // the headers and checksum
 
     // we want to retrieve the ip header information, mainly the ipv4 dest
-    //const click_ip *ip = reinterpret_cast<const click_ip *>(p->data());
+    const click_ether *mch = (click_ether *) p->data();
+    const unsigned char *mach = p->mac_header();
+    const unsigned char *nhd = p->network_header();
     const click_ip *iph = p->ip_header();
 
     printf("src ip addr: %s\n", IPAddress(iph->ip_src.s_addr).s().c_str() );
@@ -165,6 +185,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     // our packet then will be the previous packet (p)
     // plus the size of the sssheader plus the size of the protocol
     // message header.
+    // TODO: the math here that needs to happen is subtract out the L3->data() field.
     ssspkt->Len = p->length()+sizeof(SSSProto);
     printf("orig length: %d\n", p->length());
     printf("sss length: %d\n", ssspkt->Len);
@@ -180,7 +201,6 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     printf("after ssspkt settings\n");
 
-
     // convert our ip packet from data into a string
     // jesus pray for us
     std::string str_pkt_data(reinterpret_cast<const char*>(p->data()));
@@ -190,11 +210,10 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     // do the hard work to convert data to encoded forms
     std::vector<std::string> encoded = SecretShareData(_threshold, _shares, str_pkt_data);
 
-    printf("after encrypt, encode length: %d\n", encoded.size());
+    printf("after encrypt, encode length: %ld\n", encoded.size());
     
     // now lets create the shares
     for (int i = 0; i < _shares; ++i) {
-        //Packet *pkt = p->clone();
         ssspkt->Shareid = i;
 
         // encoded has the same length as the original data
@@ -202,10 +221,22 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
         // we would like this to work, which is to copy our encoded data back into the
         // the packet to send out
-	Packet *pkt = Packet::make(ssspkt->Data, ssspkt->Len);
-        //memcpy((void*)pkt->data(), ssspkt, ssspkt->Len);
+	Packet *pkt = Packet::make(ssspkt->Data, ssspkt->Len+14);
+
+	//printf("%ld vs %ld", sizeof(pkt->buffer()), sizeof(mach));
+	
+	// remove some head room from packet to add L2 and L3 headers
+	//pkt->push_mac_header(sizeof(mach)+sizeof(nhd));
+	Packet *new_pkt = pkt->push_mac_header(14);
+	memcpy((void*)new_pkt->data(), mach, 14);
+
+	//new_pkt->ether_header()->ether_type = htons(ETHERTYPE_IP+0x99);
+
+	//pkt->set_mac_header(mach);
+	//pkt->set_network_header(nhd);
 
         // send packet out the given port
+        //output(i).push(newpkt);
         output(i).push(pkt);
 
 	// TODO: I forget C memory management, can i free pkt now that output has it
