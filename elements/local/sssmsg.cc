@@ -9,6 +9,9 @@
 #include "sssproto.hh"
 #include "sssmsg.hh"
 
+// handling shared cache
+//#include <mutex>          // std::mutex
+
 /*****   THIS IS THE CRYPTO SECTION *****/
 #include <iostream>
 #include <cstdlib>
@@ -237,8 +240,8 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 	/* ****** validate that we are sending correct data ********** */
         // we want to retrieve the ip header information, mainly the ipv4 dest
         const click_ether *mch = (click_ether *) new_pkt->data();
-        printf("mac source addr: %s\n", EtherAddress(mch->ether_shost).s().c_str());
-        printf("mac dest addr: %s\n", EtherAddress(mch->ether_dhost).s().c_str());
+        //printf("mac source addr: %s\n", EtherAddress(mch->ether_shost).unparse().c_str());
+        //printf("mac dest addr: %s\n", EtherAddress(mch->ether_dhost).unparse().c_str());
     
         // following from when we encoded our data and put our sss data into
         // the pkt data field, we now need to extract it
@@ -274,9 +277,8 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     const click_ether *mch = (click_ether *) p->data();
     const unsigned char *mach = p->mac_header();
 
-    printf("mac source addr: %s\n", mch->ether_shost);
-    printf("mac dest addr: %s\n", mch->ether_dhost);
-    printf("mac proto addr: %d\n", mch->ether_type);
+    //printf("mac source addr: %s\n", EtherAddress(mch->ether_shost).unparse().c_str());
+    //printf("mac dest addr: %s\n", EtherAddress(mch->ether_dhost).unparse().c_str());
 
     // following from when we encoded our data and put our sss data into
     // the pkt data field, we now need to extract it
@@ -284,13 +286,21 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
 
+
+
+    //cache_mut.lock();
+    /******************** CRITICAL REGION - KEEP IT SHORT *****************/
+
+
+
     // check if this packet destination is already in our storage queue
     auto t = storage.find(ssspkt->Sharehost);
+    //auto end = storage.end();
 
-    // TODO: get into trouble in multithread with end pointer changing?
-    // not found
     if (t == storage.end()) {
+	printf("[nh] adding %s:%lu to cache\n", IPAddress(ssspkt->Sharehost).s().c_str(), ssspkt->Flowid);
         storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(ssspkt);
+    	//cache_mut.unlock();
         return;
     }
 
@@ -300,7 +310,9 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // map exists but there is no flowid, so add it
     if (flowid == host_map.end()) {
+	printf("[nf] adding %s:%lu to cache\n", IPAddress(ssspkt->Sharehost).s().c_str(), ssspkt->Flowid);
         storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(ssspkt);
+        //cache_mut.unlock();
         return;
     }
 
@@ -310,10 +322,19 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // including this packet, we still do not have enough to compute 
     //
     if (storage[ssspkt->Sharehost][ssspkt->Flowid].size()+1 < _threshold) {
+	printf("[under] adding %s:%lu to cache\n", IPAddress(ssspkt->Sharehost).s().c_str(), ssspkt->Flowid);
         storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(ssspkt);
+        //cache_mut.unlock();
         return;
     }
 
+    // TODO: every message over threshold will cause duplicate packets
+    // also handle retransmits? force new flowid?
+    //auto tt = complete.find(ssspkt->Sharehost);
+    //complete[ssspkt->Sharehost][ssspkt->Flowid] = true;
+    ////cache_mut.unlock();
+
+    printf("over, time to reconstruct\n");
 
     // we have enough to compute, create vector of the data
     std::vector<std::string> encoded;
@@ -328,7 +349,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // attempt to cast the pkt_data back to the packet
     // TODO this
-        memcpy((void*)p->data(), (void*)pkt_data.c_str(), p->length());
+    memcpy((void*)p->data(), (void*)pkt_data.c_str(), p->length());
     
 
     // ship it
