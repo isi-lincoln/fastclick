@@ -255,9 +255,23 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 */
 void SSSMsg::decrypt(int ports, Packet *p) {
 
+    printf("in decrypt\n");
+
+    //struct SSSProto *ssspkt = new SSSProto;
+
+    // we want to retrieve the ip header information, mainly the ipv4 dest
+    const click_ether *mch = (click_ether *) p->data();
+    const unsigned char *mach = p->mac_header();
+
+    printf("mac source addr: %s\n", mch->ether_shost);
+    printf("mac dest addr: %s\n", mch->ether_dhost);
+    printf("mac proto addr: %d\n", mch->ether_type);
+
     // following from when we encoded our data and put our sss data into
     // the pkt data field, we now need to extract it
-    const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(p->data());
+    const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(p->data()+14); // 14 is mac offset
+
+    printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
 
     // check if this packet destination is already in our storage queue
     auto t = storage.find(ssspkt->Sharehost);
