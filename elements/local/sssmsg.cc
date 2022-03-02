@@ -3,6 +3,7 @@
 #include <click/args.hh> // Args, for configure
 #include <click/ipaddress.hh> // ip address
 #include <include/click/packet.hh> // pkt make
+#include <click/etheraddress.hh> // eth address
 
 // protocol files
 #include "sssproto.hh"
@@ -144,23 +145,19 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 */
 
 void SSSMsg::encrypt(int ports, Packet *p) {
-
-    // TODO: reminder we are allocating memory here, so we need to tear down at end of function
-    struct SSSProto *ssspkt = new SSSProto;
-
     // packet is too large
     if (p->length() > SSSPROTO_DATA_LEN) {
-	fprintf(stderr, "packet length too large for secret splitting\n");
-    	return;
+    fprintf(stderr, "packet length too large for secret splitting\n");
+        return;
     }
 
     // saftey checks
     if (!p->has_mac_header()) {
-	fprintf(stderr, "secret split doesnt know how to handle this packet (no L2).\n");
+    fprintf(stderr, "secret split doesnt know how to handle this packet (no L2).\n");
     }
 
     if (!p->has_network_header()) {
-	fprintf(stderr, "secret split doesnt know how to handle this packet (no L3).\n");
+    fprintf(stderr, "secret split doesnt know how to handle this packet (no L3).\n");
     }
 
     // XXX: We assume that the click config will handle the MAC rewriting for now
@@ -180,24 +177,25 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     const unsigned char *nhd = p->network_header();
     const click_ip *iph = p->ip_header();
 
-    printf("src ip addr: %s\n", IPAddress(iph->ip_src.s_addr).s().c_str() );
+    //printf("src mac addr: %s\n", EtherAddress(mch->ether_shost).s().c_str());
+    //printf("src ip addr: %s\n", IPAddress(iph->ip_src.s_addr).s().c_str() );
 
     // our packet then will be the previous packet (p)
     // plus the size of the sssheader plus the size of the protocol
     // message header.
     // TODO: the math here that needs to happen is subtract out the L3->data() field.
-    ssspkt->Len = p->length()+sizeof(SSSProto);
-    printf("orig length: %d\n", p->length());
-    printf("sss length: %d\n", ssspkt->Len);
+    unsigned long length = p->length()+sizeof(SSSProto);
+    //printf("orig length: %d\n", p->length());
+    //printf("sss length: %d\n", ssspkt->Len);
 
     // source ip address is the share host (originator of data)
     // ip_src is in_addr struct
-    ssspkt->Sharehost = IPAddress(iph->ip_src.s_addr);
+    unsigned long src_host = IPAddress(iph->ip_src.s_addr);
 
     // initial version of protocol
-    ssspkt->Version = 0; 
+    int version = 0; 
 
-    ssspkt->Flowid = _flowid++; // see notes on randomizing this for fun
+    int flowid = _flowid++; // see notes on randomizing this for fun
 
     printf("after ssspkt settings\n");
 
@@ -212,36 +210,49 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     printf("after encrypt, encode length: %ld\n", encoded.size());
     
+    SSSProto *ssspkt_arr[_shares];
+
     // now lets create the shares
     for (int i = 0; i < _shares; ++i) {
-        ssspkt->Shareid = i;
+        ssspkt_arr[i] = new SSSProto;
+        ssspkt_arr[i]->Len = length;
+        ssspkt_arr[i]->Sharehost = src_host;
+        ssspkt_arr[i]->Version = version;
+        ssspkt_arr[i]->Flowid = flowid;
+        ssspkt_arr[i]->Shareid = i;
 
         // encoded has the same length as the original data
-        strcpy(ssspkt->Data, encoded[i].c_str());
+        strcpy(ssspkt_arr[i]->Data, encoded[i].c_str());
 
         // we would like this to work, which is to copy our encoded data back into the
         // the packet to send out
-	Packet *pkt = Packet::make(ssspkt->Data, ssspkt->Len+14);
-
-	//printf("%ld vs %ld", sizeof(pkt->buffer()), sizeof(mach));
-	
-	// remove some head room from packet to add L2 and L3 headers
-	//pkt->push_mac_header(sizeof(mach)+sizeof(nhd));
-	Packet *new_pkt = pkt->push_mac_header(14);
-	memcpy((void*)new_pkt->data(), mach, 14);
-
-	//new_pkt->ether_header()->ether_type = htons(ETHERTYPE_IP+0x99);
-
-	//pkt->set_mac_header(mach);
-	//pkt->set_network_header(nhd);
-
+        Packet *pkt = Packet::make(ssspkt_arr[i], ssspkt_arr[i]->Len+14);
+    
+        
+        // remove some head room from packet to add L2 and L3 headers
+        Packet *new_pkt = pkt->push_mac_header(14);
+        memcpy((void*)new_pkt->data(), mach, 14);
+    
+    
+	/* ****** validate that we are sending correct data ********** */
+        // we want to retrieve the ip header information, mainly the ipv4 dest
+        const click_ether *mch = (click_ether *) new_pkt->data();
+        printf("mac source addr: %s\n", EtherAddress(mch->ether_shost).s().c_str());
+        printf("mac dest addr: %s\n", EtherAddress(mch->ether_dhost).s().c_str());
+    
+        // following from when we encoded our data and put our sss data into
+        // the pkt data field, we now need to extract it
+        const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(new_pkt->data()+14); // 14 is mac offset
+    
+        printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
+    
         // send packet out the given port
         output(i).push(new_pkt);
         //output(i).push(pkt);
 
-	// TODO: I forget C memory management, can i free pkt now that output has it
-	// or is it only a pointer so i have to wait until output frees it and then
-	// i dont have to worry about it?
+        // TODO: I forget C memory management, can i free pkt now that output has it
+        // or is it only a pointer so i have to wait until output frees it and then
+        // i dont have to worry about it?
     }
 }
 
