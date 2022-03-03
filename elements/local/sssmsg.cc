@@ -152,6 +152,38 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 }
 
 
+/* convert byte array (data packet) into hex string for encryption algorithms */
+std::string BytesToHex(const unsigned char* data, unsigned long length) {
+  char hex[length*2];
+
+  // each byte is 8 bits, hex stores 4 bits, so for each byte, we take 2 hex
+  // values to store. B
+  for (int i = 0, j = 0; i < length; i++, j+=2) {
+      //offset hex pointer by 2 each time for each 1 byte
+      sprintf(hex+j, "%02x", *data);
+      data++;
+  }
+
+  return std::string(hex);
+}
+
+// https://stackoverflow.com/a/30606613
+std::vector<char> HexToBytes(const std::string& hex) {
+  std::vector<char> bytes;
+
+  //printf("in hex len: %lu", hex.length());
+  for (unsigned int i = 0; i < hex.length(); i += 2) {
+    std::string byteString = hex.substr(i, 2);
+    char byte = (char) strtol(byteString.c_str(), NULL, 16);
+    //printf("in hex: %s > %d\n", byteString.c_str(), byte);
+    bytes.push_back(byte);
+  }
+
+  //std::cout << std::string(bytes) << "\n";
+
+  return bytes;
+}
+
 /*
  * encrypt
  *
@@ -214,48 +246,53 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     printf("after ssspkt settings\n");
 
     // https://github.com/kohler/click/blob/593d10826cf5f945a78307d095ffb0897de515de/elements/standard/print.cc#L151
-    // unsigned char same as uint8_t
-    // this is hex, which is f (1111) 4 bits, coming from a byte, so
-    // it will take double the space
-    char hex_pkt_data[p->length()*2];
 
-    // TODO Assumes data is byte aligned.
-    printf("byte length: %u, hex length: %lu\n", p->length(), sizeof(hex_pkt_data));
-    const unsigned char *bdata = p->data();
-    uint16_t iter = 0;
-    for (int j=0; j < p->length(); j++, bdata++) {
-      // this is 1 byte at a time, which gets converted to 2 hex values at once.
-      sprintf(hex_pkt_data+iter, "%02x", *bdata & 0xff);
-      iter += 2;
-    }
-
-    std::string str_pkt_data(reinterpret_cast<char*>(hex_pkt_data));
-
+    std::string str_pkt_data = BytesToHex(p->data(), p->length());
     printf("pkt as hex: %s\n", str_pkt_data.c_str()); 
 
     // do the hard work to convert data to encoded forms
     std::vector<std::string> encoded = SSSMsg::SplitData(_threshold, _shares, str_pkt_data);
 
-    // XXX: We can recover the data here, but it looks like recover data modifies the vector
-    // so we need to do a deep copy of encoded object first.
-    /*
-    std::string rec_pkt_data = SSSMsg::RecoverData(_threshold, encoded);
 
+    /* TODO: Development Code to Verify Correctness */
+    /*
+    // re create a backup with the minimum number of shares to meet threshold from original
+    std::vector<std::string> backup = std::vector<std::string>(encoded.begin() + (_shares-_threshold), encoded.end());
+    std::vector<std::string> backup2 = std::vector<std::string>(encoded.begin() + (_shares-_threshold), encoded.end());
+
+    std::string rec_pkt_data = SSSMsg::RecoverData(_threshold, backup);
     // assert that the strings are the same value
     assert(str_pkt_data.compare(rec_pkt_data)==0);
-    printf("secret back: %s\n", rec_pkt_data.c_str());
-    */
-    printf("after encrypt, encode length: %ld\n", encoded.size());
-    /*
-    for (int i = 0; i < _shares; ++i) {
-      // TODO: Lincoln for tomorrow, it seems that there is data here,
-      // so howdo we get it out?!?!?!?
-      printf("encode: %d\n", encoded[i].size());
-      const char *x = encoded[i].c_str();
-      for (int j = 0; j < encoded[i].size(); j++) {
-        printf("%x", x[j] & 0xff);
-      }
+
+    // now let us test how our serialization works
+    std::vector<std::string> testv;
+    for (int i = 0; i < _threshold; ++i){
+    	std::vector<char> t1 = HexToBytes(backup2[i]);
+	printf("a: %ld\n", backup2[i].length());
+	std::string tmp = std::string(&t1[0]);
+	testv.push_back(tmp);
+	//printf("bkp: %s\nx: %s\n", backup2[i].c_str(), tmp.c_str());
+	//printf("bs: %lu\nx: %lu\n", backup2[i].size(), tmp.size());
     }
+
+    std::string rec_pkt_data2 = SSSMsg::RecoverData(_threshold, testv);
+    printf("test: %s\n", rec_pkt_data2.c_str());
+
+    // assert that the strings are the same value
+    assert(str_pkt_data.compare(rec_pkt_data2)==0);
+
+    //  End Development Section 
+    */
+
+    /*
+    // lets print in hex to verify the contents
+    printf("recovered as hex:\n");
+    const char *x = rec_pkt_data.c_str();
+    printf("0x");
+    for (int j = 0; j < rec_pkt_data.size(); j++) {
+        printf("%x", x[j]);
+    }
+    printf("\n");
     */
     
     SSSProto *ssspkt_arr[_shares];
@@ -301,8 +338,13 @@ void SSSMsg::encrypt(int ports, Packet *p) {
         // the pkt data field, we now need to extract it
         const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(new_pkt->data()+14); // 14 is mac offset
     
-        printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
-    
+        //printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
+ 
+
+	// TODO: this will need work to be more precise
+	new_pkt->take(SSSPROTO_DATA_LEN-encoded[i].size());
+
+
         // send packet out the given port
         output(i).push(new_pkt);
         //output(i).push(pkt);

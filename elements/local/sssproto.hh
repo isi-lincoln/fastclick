@@ -8,6 +8,9 @@
  * SSSProto will encapsulate an IP packet 
 */
 
+// 13+32+32+4+3 = 84 / 8 = 11 bytes
+#define SSSPROTO_NONDATA_LEN 11
+
 struct SSSProto {
 #if CLICK_BYTE_ORDER == CLICK_BIG_ENDIAN
 	unsigned int Len : 13; // packet length
