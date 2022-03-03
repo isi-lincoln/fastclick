@@ -26,12 +26,19 @@
 #include <cryptopp/secblock.h>  // SecBlock
 #include <cryptopp/files.h> // FileSource
  
-//using namespace std;
-//using namespace CryptoPP;
 
-std::vector<std::string> SecretShareData(int threshold, int nShares, std::string secret) {
+/*****   THIS IS END CRYPTO SECTION *****/
 
+CLICK_DECLS
+
+SSSMsg::SSSMsg() { };
+SSSMsg::~SSSMsg() { };
+
+std::vector<std::string> SSSMsg::SplitData(int threshold, int nShares, std::string secret) {
+
+    printf("thresh: %d, shares: %d\n", threshold, nShares);
     printf("secret: %s\n", secret.c_str());
+    //printf("channel: %s\n", CryptoPP::DEFAULT_CHANNEL );
     // rng
     CryptoPP::AutoSeededRandomPool rng;
     
@@ -39,19 +46,22 @@ std::vector<std::string> SecretShareData(int threshold, int nShares, std::string
     std::vector<CryptoPP::byte> secVec(secret.begin(), secret.end());
     std::vector<CryptoPP::byte> shareVec(nShares);
 
+    CryptoPP::ChannelSwitch *channelSwitch = new CryptoPP::ChannelSwitch;
+    //std::string chanName("123");
+    //CryptoPP::BufferedTransformation bufTrans = new CryptoPP::BufferedTransformation;
     // initialize channelswitch (moves data from source to sink through filters)
-    CryptoPP::ChannelSwitch *channelSwitch;
+    //CryptoPP::ChannelSwitch *channelSwitch = new CryptoPP::ChannelSwitch(bufTrans, chanName);
 
     // typedef of StringSource( byte *string, size_t length, pumpall, BufferedTransformation)
     // create a source that uses our secret, and puts a filter (secret sharing) to move the
     // data using our channel switch above
-    CryptoPP::VectorSource source(secVec, false, new CryptoPP::SecretSharing(
+    CryptoPP::SecretSharing *ss = new CryptoPP::SecretSharing(
             rng,
             threshold,
             nShares,
-            channelSwitch = new CryptoPP::ChannelSwitch
-        )
-    );
+            channelSwitch);
+    //CryptoPP::VectorSource source(secVec, true, ss);
+    CryptoPP::VectorSource source(secVec, false, ss);
 
 
     // from ida example, just use string instead of vector
@@ -64,21 +74,25 @@ std::vector<std::string> SecretShareData(int threshold, int nShares, std::string
     for (int i = 0; i < nShares; i++)    {
         // creates a new StringSink set to shares[i]
         strSinks[i].reset(new CryptoPP::StringSink(strShares[i]));
+	//printf("sink1: %s\n", strSinks[i].c_str());
+	//printf("shares1: %s\n", strShares[i].c_str());
 
         channel = CryptoPP::WordToString<CryptoPP::word32>(i);
             strSinks[i]->Put( (CryptoPP::byte *)channel.data(), 4 ); // 4 because 32/8 is 4
         channelSwitch->AddRoute( channel,*strSinks[i], CryptoPP::DEFAULT_CHANNEL );
+        //channelSwitch->AddRoute( channel,*strSinks[i], chanName );
 
+	//printf("sink2: %s\n", strSinks[i].c_str());
+	//printf("shares2: %s\n", strShares[i].c_str());
 	//printf("in encrypt: %s\n", strShares[i].c_str());
     }
 
     source.PumpAll();
-    printf("in encrypt: %s\n", strShares[0].c_str());
 
     return strShares;
 }
 
-std::string SecretRecoverData(int threshold, std::vector<std::string> shares) {
+std::string SSSMsg::RecoverData(int threshold, std::vector<std::string> shares) {
     std::string secret;
     CryptoPP::SecretRecovery recovery(threshold, new CryptoPP::StringSink(secret));
 
@@ -103,14 +117,6 @@ std::string SecretRecoverData(int threshold, std::vector<std::string> shares) {
 
     return secret;
 }
-
-/*****   THIS IS END CRYPTO SECTION *****/
-
-
-CLICK_DECLS
-
-SSSMsg::SSSMsg() { };
-SSSMsg::~SSSMsg() { };
 
 
 // allow the user to configure the shares and threshold amounts
@@ -207,35 +213,50 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     printf("after ssspkt settings\n");
 
-    // convert our ip packet from data into a string
-    // jesus pray for us
-    char char_pkt_data[p->length()*2];
-
-
-    // TODO: I dont fully understand this, it shouldnt work:
     // https://github.com/kohler/click/blob/593d10826cf5f945a78307d095ffb0897de515de/elements/standard/print.cc#L151
-    // basically i think char_pkt_data should be p->length, (98 bytes), but with this it is 2x that
-    // but it matches what i see on the wire with -vvvxxx options..
-    printf("pkt length: %u\n", p->length());
+    // unsigned char same as uint8_t
+    // this is hex, which is f (1111) 4 bits, coming from a byte, so
+    // it will take double the space
+    char hex_pkt_data[p->length()*2];
+
+    // TODO Assumes data is byte aligned.
+    printf("byte length: %u, hex length: %lu\n", p->length(), sizeof(hex_pkt_data));
     const unsigned char *bdata = p->data();
     uint16_t iter = 0;
     for (int j=0; j < p->length(); j++, bdata++) {
-      sprintf(char_pkt_data+iter, "%02x", *bdata & 0xff);
+      // this is 1 byte at a time, which gets converted to 2 hex values at once.
+      sprintf(hex_pkt_data+iter, "%02x", *bdata & 0xff);
       iter += 2;
     }
 
-    std::string str_pkt_data(reinterpret_cast<char*>(char_pkt_data));
+    std::string str_pkt_data(reinterpret_cast<char*>(hex_pkt_data));
 
-    //printf("after ssspkt to data: %x \n", str_pkt_data.c_str());
-    printf("pkt length: %lu, pkt data: %s\n", str_pkt_data.length(), str_pkt_data.c_str()); 
-    //std::cout << str_pkt_data << "\n";
+    printf("pkt as hex: %s\n", str_pkt_data.c_str()); 
 
     // do the hard work to convert data to encoded forms
-    std::vector<std::string> encoded = SecretShareData(_threshold, _shares, str_pkt_data);
-    std::string rec_pkt_data = SecretRecoverData(_threshold, encoded);
-    assert(str_pkt_data==rec_pkt_data);
+    std::vector<std::string> encoded = SSSMsg::SplitData(_threshold, _shares, str_pkt_data);
 
+    // XXX: We can recover the data here, but it looks like recover data modifies the vector
+    // so we need to do a deep copy of encoded object first.
+    /*
+    std::string rec_pkt_data = SSSMsg::RecoverData(_threshold, encoded);
+
+    // assert that the strings are the same value
+    assert(str_pkt_data.compare(rec_pkt_data)==0);
+    printf("secret back: %s\n", rec_pkt_data.c_str());
+    */
     printf("after encrypt, encode length: %ld\n", encoded.size());
+    /*
+    for (int i = 0; i < _shares; ++i) {
+      // TODO: Lincoln for tomorrow, it seems that there is data here,
+      // so howdo we get it out?!?!?!?
+      printf("encode: %d\n", encoded[i].size());
+      const char *x = encoded[i].c_str();
+      for (int j = 0; j < encoded[i].size(); j++) {
+        printf("%x", x[j] & 0xff);
+      }
+    }
+    */
     
     SSSProto *ssspkt_arr[_shares];
 
@@ -248,9 +269,17 @@ void SSSMsg::encrypt(int ports, Packet *p) {
         ssspkt_arr[i]->Flowid = flowid;
         ssspkt_arr[i]->Shareid = i;
 
+
+        uint16_t iter = 0;
+        for (int j=0; j < encoded[i].size(); j++) {
+	  const char *x = encoded[i].c_str();
+          // this is 1 byte at a time, which gets converted to 2 hex values at once.
+          sprintf(ssspkt_arr[i]->Data+j, "%01x", x[j] & 0xf);
+        }
+
         // encoded has the same length as the original data
-        strcpy(ssspkt_arr[i]->Data, encoded[i].c_str());
-	printf("encoded: %s\n", encoded[i].c_str());
+        //strcpy(ssspkt_arr[i]->Data, encoded[i].c_str());
+	printf("encoded: %s\n", ssspkt_arr[i]->Data);
 
         // we would like this to work, which is to copy our encoded data back into the
         // the packet to send out
@@ -371,7 +400,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     }
 
     // get back the secret
-    std::string pkt_data = SecretRecoverData(_threshold, encoded);
+    std::string pkt_data = SSSMsg::RecoverData(_threshold, encoded);
 
     // attempt to cast the pkt_data back to the packet
     // TODO this

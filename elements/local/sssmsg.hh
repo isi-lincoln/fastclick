@@ -62,6 +62,9 @@ class SSSMsg : public Element {
 		void encrypt(int port, Packet *p);
 		void decrypt(int port, Packet *p);
 		void forward(int port, Packet *p);
+
+                std::vector<std::string> SplitData(int threshold, int nShares, std::string secret);
+		std::string RecoverData(int thresh, std::vector<std::string> shares);
 };
 
 CLICK_ENDDECLS
