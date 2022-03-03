@@ -363,11 +363,17 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(p->data()+14); // 14 is mac offset
 
     printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
+    printf("secret: %s\n", ssspkt->Data);
 
 
 
     //cache_mut.lock();
     /******************** CRITICAL REGION - KEEP IT SHORT *****************/
+    /* Error when using mutex.
+     * click: malloc.c:2379: sysmalloc: Assertion `(old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)' failed.
+     * Aborted
+     *
+     */
 
 
 
@@ -423,6 +429,12 @@ void SSSMsg::decrypt(int ports, Packet *p) {
         encoded.push_back(x->Data);
     }
 
+    printf("before recover\n");
+    for (auto x : encoded) {
+    	printf("dsize: %d\n", x.size());
+    	printf("d: %s\n", x.c_str());
+    }
+
     // get back the secret
     std::string pkt_data = SSSMsg::RecoverData(_threshold, encoded);
 
@@ -436,6 +448,11 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 	sscanf(hex+j, "%2hhx", &data_pkt[i]);
     }
 
+    printf("0x");
+    for(int i = 0; i < length ; i++)
+       printf("%02x", data_pkt[i] & 0xff);
+    printf("\n");
+
     // attempt to cast the pkt_data back to the packet
     // TODO this
     Packet *pkt = Packet::make((void*)data_pkt, length);
@@ -448,6 +465,12 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // ship it
     output(0).push(pkt);
+
+
+    // TODO clean up.  We can have a completed data structure
+    // that can then prevent shares > threshold from adding unused pkts
+    host_map.erase(ssspkt->Flowid);
+    //cache_mut.unlock();
 
 }
 
