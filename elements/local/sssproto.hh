@@ -24,7 +24,7 @@ struct SSSProto {
 #else
 #error "Undefined Byte Order!"
 #endif
-	char Data[SSSPROTO_DATA_LEN];
+	unsigned char Data[SSSPROTO_DATA_LEN];
 } CLICK_SIZE_PACKED_ATTRIBUTE;
 
 #endif

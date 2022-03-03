@@ -270,16 +270,17 @@ void SSSMsg::encrypt(int ports, Packet *p) {
         ssspkt_arr[i]->Shareid = i;
 
 
-        uint16_t iter = 0;
-        for (int j=0; j < encoded[i].size(); j++) {
-	  const char *x = encoded[i].c_str();
-          // this is 1 byte at a time, which gets converted to 2 hex values at once.
-          sprintf(ssspkt_arr[i]->Data+j, "%01x", x[j] & 0xf);
+        // convert from hex back to bytes and store in data field
+        unsigned char *data_pkt = ssspkt_arr[i]->Data;
+        const char *hex = encoded[i].c_str();
+        for (int i = 0, j=0; i < encoded[i].size(); i++, j+=2) {
+    	    sscanf(hex+j, "%2hhx", &data_pkt[i]);
         }
+
 
         // encoded has the same length as the original data
         //strcpy(ssspkt_arr[i]->Data, encoded[i].c_str());
-	printf("encoded: %s\n", ssspkt_arr[i]->Data);
+	//printf("encoded: %s\n", ssspkt_arr[i]->Data);
 
         // we would like this to work, which is to copy our encoded data back into the
         // the packet to send out
@@ -392,11 +393,11 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // we have enough to compute, create vector of the data
     std::vector<std::string> encoded;
-    encoded.push_back(ssspkt->Data);
+    encoded.push_back(std::string(reinterpret_cast<const char*>(ssspkt->Data))); // add this packet first
     long length = 0;
     for (auto x : storage[ssspkt->Sharehost][ssspkt->Flowid]) {
 	length = x->Len; // all the blocks are same size encoded
-        encoded.push_back(x->Data);
+        encoded.push_back(std::string(reinterpret_cast<const char*>(x->Data))); // now add all the other packets
     }
 
     // get back the secret
