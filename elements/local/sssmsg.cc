@@ -395,23 +395,34 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     encoded.push_back(ssspkt->Data);
     long length = 0;
     for (auto x : storage[ssspkt->Sharehost][ssspkt->Flowid]) {
-	length = x->Len;
+	length = x->Len; // all the blocks are same size encoded
         encoded.push_back(x->Data);
     }
 
     // get back the secret
     std::string pkt_data = SSSMsg::RecoverData(_threshold, encoded);
 
+    printf("hex packet: %s\n", pkt_data.c_str());
+
+    // convert from hex back to bytes
+    unsigned char data_pkt[length]; // this will be the original packet back as bytes
+    const char *hex = pkt_data.c_str();
+    for (int i = 0, j=0; i < length; i++, j+=2) {
+	sscanf(hex+j, "%2hhx", &data_pkt[i]);
+    }
+
     // attempt to cast the pkt_data back to the packet
     // TODO this
-    //memcpy((void*)p->data()+14, , length);
-    Packet *pkt = Packet::make((void*)pkt_data.c_str(),length);
+    Packet *pkt = Packet::make((void*)data_pkt, length);
+
+    // TODO assumes that after this we have the ether rewrite
+    // that will overwrite the original ether addresses
 
     Packet *new_pkt = pkt->push_mac_header(14);
     memcpy((void*)new_pkt->data(), mach, 14);
 
     // ship it
-    output(0).push(new_pkt);
+    output(0).push(pkt);
 
 }
 
