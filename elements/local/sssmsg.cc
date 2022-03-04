@@ -362,7 +362,8 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // we want to retrieve the headers to save for later
     const click_ether *mch = (click_ether *) p->data();
     const unsigned char *mach = p->mac_header();
-    const click_ip *iph = p->ip_header();
+    //const click_ip *iph = p->ip_header();
+    const click_ip *iph = (click_ip*)(p->data()+sizeof(click_ether));
 
     printf("mac source addr: %s\n", EtherAddress(mch->ether_shost).unparse().c_str());
     printf("dst source addr: %s\n", EtherAddress(mch->ether_dhost).unparse().c_str());
