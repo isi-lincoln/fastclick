@@ -4,6 +4,10 @@
 #include <click/ipaddress.hh> // ip address
 #include <include/click/packet.hh> // pkt make
 #include <click/etheraddress.hh> // eth address
+#include <clicknet/ip.h> // ip header checksum
+#include <clicknet/icmp.h> // icmp header checksum
+#include <clicknet/tcp.h> // tcp header checksum
+#include <clicknet/udp.h> // udp header checksum
 
 // protocol files
 #include "sssproto.hh"
@@ -338,6 +342,35 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 }
 
 
+/*TODO */
+void tcp_check(WritablePacket *p) {
+  //click_ip *ip = const_cast<click_ip *>(reinterpret_cast<const click_ip *>(p->data()+14));
+  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+14);
+  click_tcp *tcp = reinterpret_cast<click_tcp *>(ip + 1);
+  tcp->th_sum = 0;
+  unsigned short len = p->length()-14-sizeof(click_ip);
+  unsigned csum = click_in_cksum((uint8_t *)tcp, len);
+  tcp->th_sum = click_in_cksum_pseudohdr(csum, ip, len);
+}
+void udp_check(WritablePacket *p) {
+  //click_ip *ip = const_cast<click_ip *>(reinterpret_cast<const click_ip *>(p->data()+14));
+  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+14);
+  click_udp *udp = reinterpret_cast<click_udp *>(ip + 1);
+  udp->uh_sum = 0;
+  unsigned short len = p->length()-14-sizeof(click_ip);
+  unsigned csum = click_in_cksum((uint8_t *)udp, len);
+  udp->uh_sum = click_in_cksum_pseudohdr(csum, ip, len);
+}
+void icmp_check(WritablePacket *p){
+    //click_icmp *icmph = const_cast<click_icmp *>(p->icmp_header());
+    click_icmp *icmph = p->icmp_header();
+    std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
+    icmph->icmp_cksum = 0;
+    icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, p->length() - p->transport_header_offset());
+    std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
+}
+
+
 /*
  * decrypt
  *
@@ -471,25 +504,45 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // attempt to cast the pkt_data back to the packet
     // TODO this
-    Packet *pkt = Packet::make((void*)data_pkt, length);
+    WritablePacket *pkt = Packet::make((void*)data_pkt, length);
 
     // TODO assumes that after this we have the ether rewrite
     // that will overwrite the original ether addresses
 
+
+    /* TODO this works, find out why when i dont push the header and take away that it doesnt. */
     Packet *new_pkt = pkt->push_mac_header(14);
     memcpy((void*)new_pkt->data(), mach, 14);
     new_pkt->pull(14);
+
+
+    /* Checksums - the devil is in the details */
+    // we know its IP because we enforce that in the config, but now we need to handle the checksums
+    // for the protocols above us
+    const click_ether *mch2 = (click_ether *) pkt->data();
+    //click_ip *iph = reinterpret_cast<click_ip *>(pkt->data()+14);
+    click_ip *iph = pkt->ip_header();
+    std::cout << "src: " << IPAddress(iph->ip_src.s_addr).s().c_str() << " dst: " << IPAddress(iph->ip_dst.s_addr).s().c_str() << "\n";
+
+    std::cout << "ip proto: " << iph->ip_p << " ? " << IP_PROTO_ICMP << "\n"; 
+    if (iph->ip_p == IP_PROTO_TCP)
+        tcp_check(pkt);
+    else if (iph->ip_p == IP_PROTO_UDP)
+        udp_check(pkt);
+    else if (iph->ip_p == IP_PROTO_ICMP)
+        icmp_check(pkt);
+
+    // do lowest protocol last for checksum
+    unsigned hlen = iph->ip_hl << 2;
+    iph->ip_sum = 0;
+    iph->ip_sum = click_in_cksum((unsigned char *)iph, hlen);
+  
 
     // ship it
     output(0).push(pkt);
 
 
-    // TODO clean up.  We can have a completed data structure
-    // that can then prevent shares > threshold from adding unused pkts
-    //host_map.erase(flow);
-    //std::vector<std::string> tmp;
-    //tmp.push_back("");
-    //storage[host][flow] = tmp;
+    // prevent sending duplicated packets after we've reached threshold shares
     completed[host][flow] = "fin";
     cache_mut.unlock();
 
