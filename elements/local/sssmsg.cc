@@ -365,33 +365,15 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     //const click_ip *iph = p->ip_header();
     const click_ip *iph = (click_ip*)(p->data()+sizeof(click_ether));
 
-    printf("mac source addr: %s\n", EtherAddress(mch->ether_shost).unparse().c_str());
-    printf("dst source addr: %s\n", EtherAddress(mch->ether_dhost).unparse().c_str());
-
-    printf("mac source addr: %s\n", IPAddress(iph->ip_src).unparse().c_str());
-    printf("dst source addr: %s\n", IPAddress(iph->ip_dst).unparse().c_str());
-
-    std::cout << "after headers\n";
-
     unsigned long iplen = iph->ip_hl << 2;
     unsigned long total_length = p->length();
     unsigned long header_length = DEFAULT_MAC_LEN + iplen;
     unsigned long data_length = total_length - header_length;
 
-    std::cout << "after lengths\n";
-
     // following from when we encoded our data and put our sss data into
     // the pkt data field, we now need to extract it
     const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(p->data()+header_length);
     unsigned long encode_length = ssspkt->Len;
-
-    printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
-
-    printf("encoded secret:\n");
-    for (int i = 0; i < (encode_length); i++){
-        std::cout << ssspkt->Data[i];
-    }
-    std::cout << "\n";
 
     long unsigned host = ssspkt->Sharehost;
     long unsigned flow = ssspkt->Flowid;
@@ -460,18 +442,12 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // we have enough to compute, create vector of the data
     std::vector<std::string> encoded;
     encoded.push_back(data);
-    //printf("putting in self: %s\n", data.c_str());
-    //printf("length of cache: %lu\n", storage[host][flow].size());
     for (auto x : storage[host][flow]) {
-        //printf("putting in encode: %s\n", x.c_str());
         encoded.push_back(x);
     }
 
     // get back the secret
     std::string pkt_data = SSSMsg::RecoverData(_threshold, encoded);
-
-    //printf("hex packet: %s\n", pkt_data.c_str());
-    std::cout << "recovered secret: " << pkt_data << "\n";
 
     // convert from hex back to bytes
     unsigned char data_pkt[encode_length/2]; 
@@ -493,7 +469,6 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // for the protocols above us
     //
     click_ip *new_iph = pkt->ip_header();
-    std::cout << "src: " << IPAddress(new_iph->ip_src.s_addr).s().c_str() << " dst: " << IPAddress(new_iph->ip_dst.s_addr).s().c_str() << "\n";
 
     std::cout << "ip proto: " << new_iph->ip_p << " ? " << IP_PROTO_ICMP << "\n";
     if (new_iph->ip_p == IP_PROTO_TCP)

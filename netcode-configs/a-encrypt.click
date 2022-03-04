@@ -77,9 +77,9 @@ encrypt[2]	->	EtherRewrite(04:70:00:00:00:30, 04:70:00:00:00:31)	->	q4;
 
 
 // if the packet is coming over one of or other links, it means its already encrypted and ready to be decrypted.
-classifier1[1]	->	decrypt;
-classifier2[1]	->	decrypt;
-classifier3[1]	->	decrypt;
+classifier1[1]	->	EtherRewrite(04:70:00:00:00:11, 04:70:00:00:00:10)      ->	decrypt;
+classifier2[1]	->	EtherRewrite(04:70:00:00:00:21, 04:70:00:00:00:20)      ->	decrypt;
+classifier3[1]	->	EtherRewrite(04:70:00:00:00:31, 04:70:00:00:00:30)      ->	decrypt;
 
 
 decrypt	->	EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)	->	q1;

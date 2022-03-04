@@ -1,6 +1,4 @@
 // address info for each of the interfaces
-
-// config file for device b
 AddressInfo(
 	eth1-dev	192.168.0.101	192.168.0.0/24	04:70:00:00:00:02,
 	eth2-dev	10.0.0.2	10.0.0.0/24	04:70:00:00:00:11,
@@ -60,7 +58,7 @@ decrypt	:: SSSMsg(3,2,1);
 
 /* handle the arp requests */
 
-data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.1 192.168.0.0/24 04:70:00:00:01:01)	->	q1;
+data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.1 192.168.0.0/24 04:70:00:00:00:02)	->	q1;
 
 left_in_device	->	classifier1[0]	->	Print("b")	->	ARPResponder(10.0.0.1 10.0.0.0/24 04:70:00:00:00:10)	->	q2;
 center_in_device ->	classifier2[0]	->	Print("c")	->	ARPResponder(10.0.1.1 10.0.1.0/24 04:70:00:00:00:20)	->	q3;
@@ -70,18 +68,18 @@ right_in_device ->	classifier3[0]	->	Print("d")	->	ARPResponder(10.0.2.1 10.0.2.
 // if this is an ip packet
 // and it is dest host y -> rewrite the eth header now
 // then send it to SSS, 3 shares, 2 threshold, and set option to encrypt
-classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]	->	IPPrint("ip pkt")	->	EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)	->	encrypt;
+classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]	->	IPPrint("ip pkt")	->	encrypt;
 
 // then these will be the encoded chunks
-encrypt[0]	->	q2;
-encrypt[1]	->	q3;
-encrypt[2]	->	q4;
+encrypt[0]	->	EtherRewrite(04:70:00:00:00:11, 04:70:00:00:00:10)	->	q2;
+encrypt[1]	->	EtherRewrite(04:70:00:00:00:21, 04:70:00:00:00:20)	->	q3;
+encrypt[2]	->	EtherRewrite(04:70:00:00:00:31, 04:70:00:00:00:30)	->	q4;
 
 
 // if the packet is coming over one of or other links, it means its already encrypted and ready to be decrypted.
-classifier1[1]	->	EtherRewrite(04:70:00:00:00:11, 04:70:00:00:00:10)      ->	decrypt;
-classifier2[1]	->	EtherRewrite(04:70:00:00:00:21, 04:70:00:00:00:20)      ->	decrypt;
-classifier3[1]	->	EtherRewrite(04:70:00:00:00:31, 04:70:00:00:00:30)      ->	decrypt;
+classifier1[1]	->	EtherRewrite(04:70:00:00:00:10, 04:70:00:00:00:11)      ->	decrypt;
+classifier2[1]	->	EtherRewrite(04:70:00:00:00:20, 04:70:00:00:00:21)      ->	decrypt;
+classifier3[1]	->	EtherRewrite(04:70:00:00:00:30, 04:70:00:00:00:31)      ->	decrypt;
 
 
 decrypt	->	EtherRewrite(04:70:00:00:00:02, 04:70:00:00:02:01)	->	q1;
