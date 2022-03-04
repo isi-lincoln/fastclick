@@ -36,9 +36,6 @@ SSSMsg::~SSSMsg() { };
 
 std::vector<std::string> SSSMsg::SplitData(int threshold, int nShares, std::string secret) {
 
-    printf("thresh: %d, shares: %d\n", threshold, nShares);
-    printf("secret: %s\n", secret.c_str());
-    //printf("channel: %s\n", CryptoPP::DEFAULT_CHANNEL );
     // rng
     CryptoPP::AutoSeededRandomPool rng;
     
@@ -74,17 +71,12 @@ std::vector<std::string> SSSMsg::SplitData(int threshold, int nShares, std::stri
     for (int i = 0; i < nShares; i++)    {
         // creates a new StringSink set to shares[i]
         strSinks[i].reset(new CryptoPP::StringSink(strShares[i]));
-	//printf("sink1: %s\n", strSinks[i].c_str());
-	//printf("shares1: %s\n", strShares[i].c_str());
 
         channel = CryptoPP::WordToString<CryptoPP::word32>(i);
             strSinks[i]->Put( (CryptoPP::byte *)channel.data(), 4 ); // 4 because 32/8 is 4
         channelSwitch->AddRoute( channel,*strSinks[i], CryptoPP::DEFAULT_CHANNEL );
         //channelSwitch->AddRoute( channel,*strSinks[i], chanName );
 
-	//printf("sink2: %s\n", strSinks[i].c_str());
-	//printf("shares2: %s\n", strShares[i].c_str());
-	//printf("in encrypt: %s\n", strShares[i].c_str());
     }
 
     source.PumpAll();
@@ -225,9 +217,6 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     const unsigned char *nhd = p->network_header();
     const click_ip *iph = p->ip_header();
 
-    //printf("src mac addr: %s\n", EtherAddress(mch->ether_shost).s().c_str());
-    //printf("src ip addr: %s\n", IPAddress(iph->ip_src.s_addr).s().c_str() );
-
     // our packet then will be the previous packet (p)
     // plus the size of the sssheader plus the size of the protocol
     // message header.
@@ -252,48 +241,23 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     // do the hard work to convert data to encoded forms
     std::vector<std::string> encoded = SSSMsg::SplitData(_threshold, _shares, str_pkt_data);
+    /*
+    for ( auto &x : encoded) {
+       std::cout << "d: " << x << "\n";
+    }
+    */
 
 
     /* TODO: Development Code to Verify Correctness */
-    /*
     // re create a backup with the minimum number of shares to meet threshold from original
     std::vector<std::string> backup = std::vector<std::string>(encoded.begin() + (_shares-_threshold), encoded.end());
     std::vector<std::string> backup2 = std::vector<std::string>(encoded.begin() + (_shares-_threshold), encoded.end());
 
     std::string rec_pkt_data = SSSMsg::RecoverData(_threshold, backup);
+
     // assert that the strings are the same value
     assert(str_pkt_data.compare(rec_pkt_data)==0);
-
-    // now let us test how our serialization works
-    std::vector<std::string> testv;
-    for (int i = 0; i < _threshold; ++i){
-    	std::vector<char> t1 = HexToBytes(backup2[i]);
-	printf("a: %ld\n", backup2[i].length());
-	std::string tmp = std::string(&t1[0]);
-	testv.push_back(tmp);
-	//printf("bkp: %s\nx: %s\n", backup2[i].c_str(), tmp.c_str());
-	//printf("bs: %lu\nx: %lu\n", backup2[i].size(), tmp.size());
-    }
-
-    std::string rec_pkt_data2 = SSSMsg::RecoverData(_threshold, testv);
-    printf("test: %s\n", rec_pkt_data2.c_str());
-
-    // assert that the strings are the same value
-    assert(str_pkt_data.compare(rec_pkt_data2)==0);
-
-    //  End Development Section 
-    */
-
-    /*
-    // lets print in hex to verify the contents
-    printf("recovered as hex:\n");
-    const char *x = rec_pkt_data.c_str();
-    printf("0x");
-    for (int j = 0; j < rec_pkt_data.size(); j++) {
-        printf("%x", x[j]);
-    }
-    printf("\n");
-    */
+    printf("recover: %s\n", rec_pkt_data.c_str());
     
     SSSProto *ssspkt_arr[_shares];
 
@@ -305,18 +269,36 @@ void SSSMsg::encrypt(int ports, Packet *p) {
         ssspkt_arr[i]->Version = version;
         ssspkt_arr[i]->Flowid = flowid;
         ssspkt_arr[i]->Shareid = i;
+        memset(ssspkt_arr[i]->Data, 0, SSSPROTO_DATA_LEN);
 
+        std::cout << "before: " << "\n";
+	for (int j = 0; j < encoded[i].size(); j++){
+        	std::cout << ssspkt_arr[i]->Data[j];
+	}
+	std::cout << "\n";
 
+        /*
         uint16_t iter = 0;
         for (int j=0; j < encoded[i].size(); j++) {
 	  const char *x = encoded[i].c_str();
           // this is 1 byte at a time, which gets converted to 2 hex values at once.
           sprintf(ssspkt_arr[i]->Data+j, "%01x", x[j] & 0xf);
         }
-
-        // encoded has the same length as the original data
-        //strcpy(ssspkt_arr[i]->Data, encoded[i].c_str());
-	printf("encoded: %s\n", ssspkt_arr[i]->Data);
+        */
+	/*
+	char* ptr = ssspkt_arr[i]->Data;
+        for ( int x = 0; x < encoded[i].size(); x++) {
+          memcpy(ptr+x, &encoded[i][0]+x, sizeof(char));
+	  //ptr[x] = &encoded[i][x];
+          //std::cout << ptr[x];
+	}
+	*/
+        memcpy(ssspkt_arr[i]->Data, &encoded[i][0], encoded[i].size());
+        std::cout << "after: " << "\n";
+	for (int j = 0; j < encoded[i].size(); j++){
+        	std::cout << ssspkt_arr[i]->Data[j];
+	}
+	std::cout << "\n";
 
         // we would like this to work, which is to copy our encoded data back into the
         // the packet to send out
@@ -342,7 +324,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
  
 
 	// TODO: this will need work to be more precise
-	new_pkt->take(SSSPROTO_DATA_LEN-encoded[i].size());
+	new_pkt->take(SSSPROTO_DATA_LEN-encoded[i].size()+14); // 14 for header
 
 
         // send packet out the given port
@@ -444,7 +426,8 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // get back the secret
     std::string pkt_data = SSSMsg::RecoverData(_threshold, encoded);
 
-    printf("hex packet: %s\n", pkt_data.c_str());
+    //printf("hex packet: %s\n", pkt_data.c_str());
+    std::cout << "recovered secret: " << pkt_data << "\n";
 
     // convert from hex back to bytes
     unsigned char data_pkt[length]; // this will be the original packet back as bytes
