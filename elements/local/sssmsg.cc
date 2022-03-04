@@ -304,6 +304,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
         ssspkt_arr[i]->Version = version;
         ssspkt_arr[i]->Flowid = flowid;
         ssspkt_arr[i]->Shareid = i;
+	ssspkt_arr[i]->Magic = SSSMAGIC;
         memset(ssspkt_arr[i]->Data, 0, SSSPROTO_DATA_LEN);
 
         //std::cout << "data length: " << data_length << " encode length: " << encoded[i].size() << "\n";

@@ -13,8 +13,11 @@
 
 #define DEFAULT_MAC_LEN 14
 
+#define SSSMAGIC 0x0a1b
+
 struct SSSProto {
 #if CLICK_BYTE_ORDER == CLICK_BIG_ENDIAN
+        unsigned char Magic: 8; // for classifier
 	unsigned int Len : 13; // packet length
 	unsigned long Sharehost : 32; // packet is from (ipv4)
 	unsigned long Flowid : 32;
@@ -26,6 +29,7 @@ struct SSSProto {
 	unsigned long Flowid : 32;
 	unsigned long Sharehost : 32;
 	unsigned int Len : 13;
+	unsigned char Magic: 8;
 #else
 #error "Undefined Byte Order!"
 #endif
