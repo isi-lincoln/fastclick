@@ -363,10 +363,21 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(p->data()+14); // 14 is mac offset
 
     printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
-    printf("encoded secret: %s\n", ssspkt->Data);
+
+    printf("encoded secret:\n");
+    for (int i = 0; i < ssspkt->Len; i++){
+	    std::cout << ssspkt->Data[i];
+    }
+    std::cout << "\n";
+
+    long length = ssspkt->Len;
+    long unsigned host = ssspkt->Sharehost;
+    long unsigned flow = ssspkt->Flowid;
+
+    std::string data(&ssspkt->Data[0], &ssspkt->Data[0] + length);
 
 
-
+    /* NOTE: for mutex you need to recompile all code to get it to work. */
     cache_mut.lock();
     /******************** CRITICAL REGION - KEEP IT SHORT *****************/
     /* Error when using mutex.
@@ -376,13 +387,13 @@ void SSSMsg::decrypt(int ports, Packet *p) {
      */
 
     // check if this packet destination is already in our storage queue
-    auto t = storage.find(ssspkt->Sharehost);
+    auto t = storage.find(host);
 
-    auto tt = completed.find(ssspkt->Sharehost);
+    auto tt = completed.find(host);
 
     if (tt != completed.end()) {
-    	auto comp_map = completed.at(ssspkt->Sharehost);
-	auto comp_it = comp_map.find(ssspkt->Flowid);
+    	auto comp_map = completed.at(host);
+	auto comp_it = comp_map.find(flow);
 	// packet has already been completed, dont do anything with this one
 	if (comp_it != comp_map.end()){
 		printf("finished sending coded packet. dropping this one\n");
@@ -392,20 +403,20 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     }
 
     if (t == storage.end()) {
-	printf("[nh] adding %s:%lu to cache\n", IPAddress(ssspkt->Sharehost).s().c_str(), ssspkt->Flowid);
-        storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(std::string(ssspkt->Data));
+	printf("[nh] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
+        storage[host][flow].push_back(data);
     	cache_mut.unlock();
         return;
     }
 
     // this is the container/map for this host
-    auto host_map = storage.at(ssspkt->Sharehost);
-    auto flowid = host_map.find(ssspkt->Flowid);
+    auto host_map = storage.at(host);
+    auto flowid = host_map.find(flow);
 
     // map exists but there is no flowid, so add it
     if (flowid == host_map.end()) {
-	printf("[nf] adding %s:%lu to cache\n", IPAddress(ssspkt->Sharehost).s().c_str(), ssspkt->Flowid);
-        storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(std::string(ssspkt->Data));
+	printf("[nf] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
+        storage[host][flow].push_back(data);
         cache_mut.unlock();
         return;
     }
@@ -415,28 +426,27 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     //
     // including this packet, we still do not have enough to compute 
     //
-    if (storage[ssspkt->Sharehost][ssspkt->Flowid].size()+1 < _threshold) {
-	printf("[under] adding %s:%lu to cache\n", IPAddress(ssspkt->Sharehost).s().c_str(), ssspkt->Flowid);
-        storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(std::string(ssspkt->Data));
+    if (storage[host][flow].size()+1 < _threshold) {
+	printf("[under] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
+        storage[host][flow].push_back(data);
         cache_mut.unlock();
         return;
     }
 
     // TODO: every message over threshold will cause duplicate packets
     // also handle retransmits? force new flowid?
-    //auto tt = complete.find(ssspkt->Sharehost);
-    //complete[ssspkt->Sharehost][ssspkt->Flowid] = true;
+    //auto tt = complete.find(host);
+    //complete[host][flow] = true;
     ////cache_mut.unlock();
 
     printf("over, time to reconstruct\n");
 
     // we have enough to compute, create vector of the data
     std::vector<std::string> encoded;
-    encoded.push_back(ssspkt->Data);
-    printf("putting in self: %s\n", ssspkt->Data);
-    long length = ssspkt->Len;
-    printf("length of cache: %lu\n", storage[ssspkt->Sharehost][ssspkt->Flowid].size());
-    for (auto x : storage[ssspkt->Sharehost][ssspkt->Flowid]) {
+    encoded.push_back(data);
+    printf("putting in self: %s\n", data.c_str());
+    printf("length of cache: %lu\n", storage[host][flow].size());
+    for (auto x : storage[host][flow]) {
 	printf("putting in encode: %s\n", x.c_str());
         encoded.push_back(x);
     }
@@ -459,11 +469,6 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 	sscanf(hex+j, "%2hhx", &data_pkt[i]);
     }
 
-    printf("0x");
-    for(int i = 0; i < length ; i++)
-       printf("%02x", data_pkt[i] & 0xff);
-    printf("\n");
-
     // attempt to cast the pkt_data back to the packet
     // TODO this
     Packet *pkt = Packet::make((void*)data_pkt, length);
@@ -473,6 +478,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     Packet *new_pkt = pkt->push_mac_header(14);
     memcpy((void*)new_pkt->data(), mach, 14);
+    new_pkt->pull(14);
 
     // ship it
     output(0).push(pkt);
@@ -480,11 +486,11 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // TODO clean up.  We can have a completed data structure
     // that can then prevent shares > threshold from adding unused pkts
-    //host_map.erase(ssspkt->Flowid);
+    //host_map.erase(flow);
     //std::vector<std::string> tmp;
     //tmp.push_back("");
-    //storage[ssspkt->Sharehost][ssspkt->Flowid] = tmp;
-    completed[ssspkt->Sharehost][ssspkt->Flowid] = "fin";
+    //storage[host][flow] = tmp;
+    completed[host][flow] = "fin";
     cache_mut.unlock();
 
 }
