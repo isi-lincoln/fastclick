@@ -3,7 +3,7 @@
 
 #include <unordered_map>
 #include <vector>
-//#include <mutex> // cache handling
+#include <mutex> // cache handling
 
 #include <click/element.hh>
 #include <clicknet/ether.h>
@@ -35,17 +35,17 @@ class SSSMsg : public Element {
 	// when we initialize for security we should pick randomly and
 	// then we need to do overflow checking on 32bit
 	uint32_t _flowid;
-        //std::mutex cache_mut;           // mutex for critical section
 
 	/* will use this to store packets for decryption */
 	// < host >: <id, pkt>
-    	std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<const SSSProto*> > > storage; 
-    	//std::unordered_map<uint32_t, std::unordered_map<uint32_t, bool> > complete;
 
 	public:
 		SSSMsg();
 		~SSSMsg();
 
+    		std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<std::string> > > storage; 
+    		std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::string> > completed; 
+        	std::mutex cache_mut; // mutex for critical section
 
 		const char *class_name() const { return "SSSMsg"; }
 		const char *port_count() const { return "1-/1-"; } // depending on directionality, 1/3+ or 3+/1

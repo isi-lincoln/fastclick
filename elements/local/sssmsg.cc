@@ -363,11 +363,11 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(p->data()+14); // 14 is mac offset
 
     printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
-    printf("secret: %s\n", ssspkt->Data);
+    printf("encoded secret: %s\n", ssspkt->Data);
 
 
 
-    //cache_mut.lock();
+    cache_mut.lock();
     /******************** CRITICAL REGION - KEEP IT SHORT *****************/
     /* Error when using mutex.
      * click: malloc.c:2379: sysmalloc: Assertion `(old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)' failed.
@@ -375,16 +375,26 @@ void SSSMsg::decrypt(int ports, Packet *p) {
      *
      */
 
-
-
     // check if this packet destination is already in our storage queue
     auto t = storage.find(ssspkt->Sharehost);
-    //auto end = storage.end();
+
+    auto tt = completed.find(ssspkt->Sharehost);
+
+    if (tt != completed.end()) {
+    	auto comp_map = completed.at(ssspkt->Sharehost);
+	auto comp_it = comp_map.find(ssspkt->Flowid);
+	// packet has already been completed, dont do anything with this one
+	if (comp_it != comp_map.end()){
+		printf("finished sending coded packet. dropping this one\n");
+                cache_mut.unlock();
+		return;
+	}
+    }
 
     if (t == storage.end()) {
 	printf("[nh] adding %s:%lu to cache\n", IPAddress(ssspkt->Sharehost).s().c_str(), ssspkt->Flowid);
-        storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(ssspkt);
-    	//cache_mut.unlock();
+        storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(std::string(ssspkt->Data));
+    	cache_mut.unlock();
         return;
     }
 
@@ -395,8 +405,8 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // map exists but there is no flowid, so add it
     if (flowid == host_map.end()) {
 	printf("[nf] adding %s:%lu to cache\n", IPAddress(ssspkt->Sharehost).s().c_str(), ssspkt->Flowid);
-        storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(ssspkt);
-        //cache_mut.unlock();
+        storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(std::string(ssspkt->Data));
+        cache_mut.unlock();
         return;
     }
 
@@ -407,8 +417,8 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     //
     if (storage[ssspkt->Sharehost][ssspkt->Flowid].size()+1 < _threshold) {
 	printf("[under] adding %s:%lu to cache\n", IPAddress(ssspkt->Sharehost).s().c_str(), ssspkt->Flowid);
-        storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(ssspkt);
-        //cache_mut.unlock();
+        storage[ssspkt->Sharehost][ssspkt->Flowid].push_back(std::string(ssspkt->Data));
+        cache_mut.unlock();
         return;
     }
 
@@ -423,16 +433,17 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // we have enough to compute, create vector of the data
     std::vector<std::string> encoded;
     encoded.push_back(ssspkt->Data);
-    long length = 0;
+    printf("putting in self: %s\n", ssspkt->Data);
+    long length = ssspkt->Len;
+    printf("length of cache: %lu\n", storage[ssspkt->Sharehost][ssspkt->Flowid].size());
     for (auto x : storage[ssspkt->Sharehost][ssspkt->Flowid]) {
-	length = x->Len; // all the blocks are same size encoded
-        encoded.push_back(x->Data);
+	printf("putting in encode: %s\n", x.c_str());
+        encoded.push_back(x);
     }
 
     printf("before recover\n");
     for (auto x : encoded) {
-    	printf("dsize: %d\n", x.size());
-    	printf("d: %s\n", x.c_str());
+    	printf("size: %ld, encoded: %s\n", x.size(), x.c_str());
     }
 
     // get back the secret
@@ -469,8 +480,12 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // TODO clean up.  We can have a completed data structure
     // that can then prevent shares > threshold from adding unused pkts
-    host_map.erase(ssspkt->Flowid);
-    //cache_mut.unlock();
+    //host_map.erase(ssspkt->Flowid);
+    //std::vector<std::string> tmp;
+    //tmp.push_back("");
+    //storage[ssspkt->Sharehost][ssspkt->Flowid] = tmp;
+    completed[ssspkt->Sharehost][ssspkt->Flowid] = "fin";
+    cache_mut.unlock();
 
 }
 
