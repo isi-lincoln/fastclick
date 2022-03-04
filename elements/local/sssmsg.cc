@@ -145,7 +145,8 @@ void icmp_check(WritablePacket *p){
 
 // update IP packet checksum
 void ip_check(WritablePacket *p) {
-    click_ip *iph = p->ip_header();
+    click_ip *iph = reinterpret_cast<click_ip *>(p->data());
+
     unsigned hlen = iph->ip_hl << 2;
     iph->ip_sum = 0;
     iph->ip_sum = click_in_cksum((unsigned char *)iph, hlen);
@@ -254,8 +255,8 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     // we want to retrieve the ip header information, mainly the ipv4 dest
     const click_ether *mch = (click_ether *) p->data();
-    const unsigned char *mach = p->mac_header();
-    const unsigned char *nhd = p->network_header();
+    const unsigned char *mh = p->mac_header();
+    const unsigned char *nh = p->network_header();
     const click_ip *iph = p->ip_header();
 
     // TODO: data assumptions on lengths
@@ -298,7 +299,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     // now lets create the shares
     for (int i = 0; i < _shares; ++i) {
         ssspkt_arr[i] = new SSSProto;
-        ssspkt_arr[i]->Len = data_length;
+        ssspkt_arr[i]->Len = encoded[i].size();
         ssspkt_arr[i]->Sharehost = src_host;
         ssspkt_arr[i]->Version = version;
         ssspkt_arr[i]->Flowid = flowid;
@@ -306,12 +307,6 @@ void SSSMsg::encrypt(int ports, Packet *p) {
         memset(ssspkt_arr[i]->Data, 0, SSSPROTO_DATA_LEN);
 
         std::cout << "data length: " << data_length << " encode length: " << encoded[i].size() << "\n";
-
-        std::cout << "before: " << "\n";
-        for (int j = 0; j < encoded[i].size(); j++){
-            std::cout << ssspkt_arr[i]->Data[j];
-        }
-        std::cout << "\n";
 
         memcpy(ssspkt_arr[i]->Data, &encoded[i][0], encoded[i].size());
 
@@ -323,10 +318,15 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
         // create our new packet
         WritablePacket *pkt = Packet::make(ssspkt_arr[i], sizeof(SSSProto)+header_length);
+        // we done screwed up.
+	if (!pkt) return;
 
         // add space at the front to put back on the old ip and mac headers
-        WritablePacket *new_pkt = pkt->push_mac_header(header_length);
-        memcpy((void*)new_pkt->data(), p->data(), header_length);
+	Packet *ip_pkt = pkt->push(sizeof(click_ip));
+	memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
+
+	Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
+	memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
 
         // update checksum for the next host in the path
         ip_check(pkt);
@@ -334,13 +334,13 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
         /*  TODO ****** validate that we are sending correct data ********** */
         // we want to retrieve the ip header information, mainly the ipv4 dest
-        const click_ether *mch = (click_ether *) new_pkt->data();
+        //const click_ether *mch = (click_ether *) new_pkt->data();
 
         // remove extra unused data at end of packet
         pkt->take(SSSPROTO_DATA_LEN-encoded[i].size());
 
         // send packet out the given port
-        output(i).push(pkt);
+        output(i).push(new_pkt);
     }
 }
 
