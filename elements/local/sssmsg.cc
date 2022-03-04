@@ -15,7 +15,7 @@
 
 // handling shared cache
 //#include <mutex>          // std::mutex
-#include <assert.h>	// sanity check
+#include <assert.h>    // sanity check
 #include<iostream>
 
 /*****   THIS IS THE CRYPTO SECTION *****/
@@ -29,7 +29,7 @@
 #include <cryptopp/cryptlib.h>
 #include <cryptopp/secblock.h>  // SecBlock
 #include <cryptopp/files.h> // FileSource
- 
+
 
 /*****   THIS IS END CRYPTO SECTION *****/
 
@@ -42,7 +42,7 @@ std::vector<std::string> SSSMsg::SplitData(int threshold, int nShares, std::stri
 
     // rng
     CryptoPP::AutoSeededRandomPool rng;
-    
+
     // modify our string into cryptopp vector
     std::vector<CryptoPP::byte> secVec(secret.begin(), secret.end());
     std::vector<CryptoPP::byte> shareVec(nShares);
@@ -114,11 +114,47 @@ std::string SSSMsg::RecoverData(int threshold, std::vector<std::string> shares) 
     return secret;
 }
 
+// update tcp checksum
+void tcp_check(WritablePacket *p) {
+  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+DEFAULT_MAC_LEN);
+  click_tcp *tcp = reinterpret_cast<click_tcp *>(ip + 1);
+  tcp->th_sum = 0;
+  unsigned short len = p->length()-DEFAULT_MAC_LEN-sizeof(click_ip);
+  unsigned csum = click_in_cksum((uint8_t *)tcp, len);
+  tcp->th_sum = click_in_cksum_pseudohdr(csum, ip, len);
+}
+
+// update udp checksum
+void udp_check(WritablePacket *p) {
+  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+DEFAULT_MAC_LEN);
+  click_udp *udp = reinterpret_cast<click_udp *>(ip + 1);
+  udp->uh_sum = 0;
+  unsigned short len = p->length()-DEFAULT_MAC_LEN-sizeof(click_ip);
+  unsigned csum = click_in_cksum((uint8_t *)udp, len);
+  udp->uh_sum = click_in_cksum_pseudohdr(csum, ip, len);
+}
+
+// update icmp checksum
+void icmp_check(WritablePacket *p){
+    click_icmp *icmph = p->icmp_header();
+    std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
+    icmph->icmp_cksum = 0;
+    icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, p->length() - p->transport_header_offset());
+    std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
+}
+
+// update IP packet checksum
+void ip_check(WritablePacket *p) {
+    click_ip *iph = p->ip_header();
+    unsigned hlen = iph->ip_hl << 2;
+    iph->ip_sum = 0;
+    iph->ip_sum = click_in_cksum((unsigned char *)iph, hlen);
+}
 
 // allow the user to configure the shares and threshold amounts
 int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     uint8_t shares;
-    uint8_t threshold; 
+    uint8_t threshold;
     uint8_t function;
     if (Args(conf, this, errh)
         .read_mp("SHARES", shares) // positional
@@ -186,26 +222,27 @@ std::vector<char> HexToBytes(const std::string& hex) {
  * takes in a single packet, encodes it and forwards the
  * encoded share out multiple interfaces.
  *
+ * XXX: We assume that the click config will handle the MAC rewriting for now
 */
 
 void SSSMsg::encrypt(int ports, Packet *p) {
     // packet is too large
     if (p->length() > SSSPROTO_DATA_LEN) {
-    fprintf(stderr, "packet length too large for secret splitting\n");
+        fprintf(stderr, "packet length too large for secret splitting\n");
         return;
     }
 
     // saftey checks
     if (!p->has_mac_header()) {
-    fprintf(stderr, "secret split doesnt know how to handle this packet (no L2).\n");
+        fprintf(stderr, "secret split doesnt know how to handle this packet (no L2).\n");
+        return;
     }
 
     if (!p->has_network_header()) {
-    fprintf(stderr, "secret split doesnt know how to handle this packet (no L3).\n");
+        fprintf(stderr, "secret split doesnt know how to handle this packet (no L3).\n");
+        return;
     }
 
-    // XXX: We assume that the click config will handle the MAC rewriting for now
-    //
 
     printf("in encrypt\n");
 
@@ -221,36 +258,29 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     const unsigned char *nhd = p->network_header();
     const click_ip *iph = p->ip_header();
 
-    // our packet then will be the previous packet (p)
-    // plus the size of the sssheader plus the size of the protocol
-    // message header.
-    // TODO: the math here that needs to happen is subtract out the L3->data() field.
-    unsigned long length = p->length();
+    // TODO: data assumptions on lengths
+    unsigned long iplen = iph->ip_hl << 2;
+    unsigned long total_length = p->length();
+    unsigned long header_length = DEFAULT_MAC_LEN + iplen;
+    unsigned long data_length = total_length - header_length;
 
     // source ip address is the share host (originator of data)
     // ip_src is in_addr struct
     unsigned long src_host = IPAddress(iph->ip_src.s_addr);
-
     // initial version of protocol
-    int version = 0; 
-
+    int version = 0;
     int flowid = _flowid++; // see notes on randomizing this for fun
 
     printf("after ssspkt settings\n");
 
+    // getting packet data as hex string.
     // https://github.com/kohler/click/blob/593d10826cf5f945a78307d095ffb0897de515de/elements/standard/print.cc#L151
-
-    std::string str_pkt_data = BytesToHex(p->data(), p->length());
-    printf("pkt as hex: %s\n", str_pkt_data.c_str()); 
+    // we are not going to encoded on the data portion of the packet
+    std::string str_pkt_data = BytesToHex(p->data()+header_length, data_length);
+    printf("pkt as hex: %s\n", str_pkt_data.c_str());
 
     // do the hard work to convert data to encoded forms
     std::vector<std::string> encoded = SSSMsg::SplitData(_threshold, _shares, str_pkt_data);
-    /*
-    for ( auto &x : encoded) {
-       std::cout << "d: " << x << "\n";
-    }
-    */
-
 
     /* TODO: Development Code to Verify Correctness */
     // re create a backup with the minimum number of shares to meet threshold from original
@@ -261,114 +291,59 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     // assert that the strings are the same value
     assert(str_pkt_data.compare(rec_pkt_data)==0);
-    printf("recover: %s\n", rec_pkt_data.c_str());
-    
+    //printf("recover: %s\n", rec_pkt_data.c_str());
+
     SSSProto *ssspkt_arr[_shares];
 
     // now lets create the shares
     for (int i = 0; i < _shares; ++i) {
         ssspkt_arr[i] = new SSSProto;
-        ssspkt_arr[i]->Len = length;
+        ssspkt_arr[i]->Len = data_length;
         ssspkt_arr[i]->Sharehost = src_host;
         ssspkt_arr[i]->Version = version;
         ssspkt_arr[i]->Flowid = flowid;
         ssspkt_arr[i]->Shareid = i;
         memset(ssspkt_arr[i]->Data, 0, SSSPROTO_DATA_LEN);
 
+        std::cout << "data length: " << data_length << " encode length: " << encoded[i].size() << "\n";
+
         std::cout << "before: " << "\n";
-	for (int j = 0; j < encoded[i].size(); j++){
-        	std::cout << ssspkt_arr[i]->Data[j];
-	}
-	std::cout << "\n";
-
-        /*
-        uint16_t iter = 0;
-        for (int j=0; j < encoded[i].size(); j++) {
-	  const char *x = encoded[i].c_str();
-          // this is 1 byte at a time, which gets converted to 2 hex values at once.
-          sprintf(ssspkt_arr[i]->Data+j, "%01x", x[j] & 0xf);
+        for (int j = 0; j < encoded[i].size(); j++){
+            std::cout << ssspkt_arr[i]->Data[j];
         }
-        */
-	/*
-	char* ptr = ssspkt_arr[i]->Data;
-        for ( int x = 0; x < encoded[i].size(); x++) {
-          memcpy(ptr+x, &encoded[i][0]+x, sizeof(char));
-	  //ptr[x] = &encoded[i][x];
-          //std::cout << ptr[x];
-	}
-	*/
-        memcpy(ssspkt_arr[i]->Data, &encoded[i][0], encoded[i].size());
-        std::cout << "after: " << "\n";
-	for (int j = 0; j < encoded[i].size(); j++){
-        	std::cout << ssspkt_arr[i]->Data[j];
-	}
-	std::cout << "\n";
+        std::cout << "\n";
 
-        // we would like this to work, which is to copy our encoded data back into the
-        // the packet to send out
-        Packet *pkt = Packet::make(ssspkt_arr[i], sizeof(SSSProto)+14);
-    
-        
-        // remove some head room from packet to add L2 and L3 headers
-        Packet *new_pkt = pkt->push_mac_header(14);
-        memcpy((void*)new_pkt->data(), mach, 14);
-    
-    
-	/* ****** validate that we are sending correct data ********** */
+        memcpy(ssspkt_arr[i]->Data, &encoded[i][0], encoded[i].size());
+
+        std::cout << "after: " << "\n";
+        for (int j = 0; j < encoded[i].size(); j++){
+            std::cout << ssspkt_arr[i]->Data[j];
+        }
+        std::cout << "\n";
+
+        // create our new packet
+        WritablePacket *pkt = Packet::make(ssspkt_arr[i], sizeof(SSSProto)+header_length);
+
+        // add space at the front to put back on the old ip and mac headers
+        WritablePacket *new_pkt = pkt->push_mac_header(header_length);
+        memcpy((void*)new_pkt->data(), p->data(), header_length);
+
+        // update checksum for the next host in the path
+        ip_check(pkt);
+
+
+        /*  TODO ****** validate that we are sending correct data ********** */
         // we want to retrieve the ip header information, mainly the ipv4 dest
         const click_ether *mch = (click_ether *) new_pkt->data();
-        //printf("mac source addr: %s\n", EtherAddress(mch->ether_shost).unparse().c_str());
-        //printf("mac dest addr: %s\n", EtherAddress(mch->ether_dhost).unparse().c_str());
-    
-        // following from when we encoded our data and put our sss data into
-        // the pkt data field, we now need to extract it
-        const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(new_pkt->data()+14); // 14 is mac offset
-    
-        //printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
- 
 
-	// TODO: this will need work to be more precise
-	new_pkt->take(SSSPROTO_DATA_LEN-encoded[i].size()+14); // 14 for header
-
+        // remove extra unused data at end of packet
+        pkt->take(SSSPROTO_DATA_LEN-encoded[i].size());
 
         // send packet out the given port
-        output(i).push(new_pkt);
-        //output(i).push(pkt);
-
-        // TODO: I forget C memory management, can i free pkt now that output has it
-        // or is it only a pointer so i have to wait until output frees it and then
-        // i dont have to worry about it?
+        output(i).push(pkt);
     }
 }
 
-
-/*TODO */
-void tcp_check(WritablePacket *p) {
-  //click_ip *ip = const_cast<click_ip *>(reinterpret_cast<const click_ip *>(p->data()+14));
-  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+14);
-  click_tcp *tcp = reinterpret_cast<click_tcp *>(ip + 1);
-  tcp->th_sum = 0;
-  unsigned short len = p->length()-14-sizeof(click_ip);
-  unsigned csum = click_in_cksum((uint8_t *)tcp, len);
-  tcp->th_sum = click_in_cksum_pseudohdr(csum, ip, len);
-}
-void udp_check(WritablePacket *p) {
-  //click_ip *ip = const_cast<click_ip *>(reinterpret_cast<const click_ip *>(p->data()+14));
-  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+14);
-  click_udp *udp = reinterpret_cast<click_udp *>(ip + 1);
-  udp->uh_sum = 0;
-  unsigned short len = p->length()-14-sizeof(click_ip);
-  unsigned csum = click_in_cksum((uint8_t *)udp, len);
-  udp->uh_sum = click_in_cksum_pseudohdr(csum, ip, len);
-}
-void icmp_check(WritablePacket *p){
-    //click_icmp *icmph = const_cast<click_icmp *>(p->icmp_header());
-    click_icmp *icmph = p->icmp_header();
-    std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
-    icmph->icmp_cksum = 0;
-    icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, p->length() - p->transport_header_offset());
-    std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
-}
 
 
 /*
@@ -393,21 +368,21 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // following from when we encoded our data and put our sss data into
     // the pkt data field, we now need to extract it
-    const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(p->data()+14); // 14 is mac offset
+    const SSSProto *ssspkt = reinterpret_cast<const SSSProto *>(p->data()+DEFAULT_MAC_LEN); // DEFAULT_MAC_LEN is mac offset
 
     printf("ip dest of secret: %s\n", IPAddress(ssspkt->Sharehost).s().c_str());
 
+    long length = ssspkt->Len;
     printf("encoded secret:\n");
-    for (int i = 0; i < ssspkt->Len; i++){
-	    std::cout << ssspkt->Data[i];
+    for (int i = 0; i < (length+1)*2; i++){
+        std::cout << ssspkt->Data[i];
     }
     std::cout << "\n";
 
-    long length = ssspkt->Len;
     long unsigned host = ssspkt->Sharehost;
     long unsigned flow = ssspkt->Flowid;
 
-    std::string data(&ssspkt->Data[0], &ssspkt->Data[0] + length);
+    std::string data(&ssspkt->Data[0], &ssspkt->Data[0] + (length*2));
 
 
     /* NOTE: for mutex you need to recompile all code to get it to work. */
@@ -425,20 +400,20 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     auto tt = completed.find(host);
 
     if (tt != completed.end()) {
-    	auto comp_map = completed.at(host);
-	auto comp_it = comp_map.find(flow);
-	// packet has already been completed, dont do anything with this one
-	if (comp_it != comp_map.end()){
-		printf("finished sending coded packet. dropping this one\n");
+        auto comp_map = completed.at(host);
+    auto comp_it = comp_map.find(flow);
+    // packet has already been completed, dont do anything with this one
+    if (comp_it != comp_map.end()){
+        printf("finished sending coded packet. dropping this one\n");
                 cache_mut.unlock();
-		return;
-	}
+        return;
+    }
     }
 
     if (t == storage.end()) {
-	printf("[nh] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
+    printf("[nh] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
         storage[host][flow].push_back(data);
-    	cache_mut.unlock();
+        cache_mut.unlock();
         return;
     }
 
@@ -448,7 +423,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // map exists but there is no flowid, so add it
     if (flowid == host_map.end()) {
-	printf("[nf] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
+    printf("[nf] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
         storage[host][flow].push_back(data);
         cache_mut.unlock();
         return;
@@ -457,10 +432,10 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // flowids do exist in the map, so check if we need to append ours
     // or if we are ready to do some computation
     //
-    // including this packet, we still do not have enough to compute 
+    // including this packet, we still do not have enough to compute
     //
     if (storage[host][flow].size()+1 < _threshold) {
-	printf("[under] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
+    printf("[under] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
         storage[host][flow].push_back(data);
         cache_mut.unlock();
         return;
@@ -480,13 +455,13 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     printf("putting in self: %s\n", data.c_str());
     printf("length of cache: %lu\n", storage[host][flow].size());
     for (auto x : storage[host][flow]) {
-	printf("putting in encode: %s\n", x.c_str());
+    printf("putting in encode: %s\n", x.c_str());
         encoded.push_back(x);
     }
 
     printf("before recover\n");
     for (auto x : encoded) {
-    	printf("size: %ld, encoded: %s\n", x.size(), x.c_str());
+        printf("size: %ld, encoded: %s\n", x.size(), x.c_str());
     }
 
     // get back the secret
@@ -499,7 +474,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     unsigned char data_pkt[length]; // this will be the original packet back as bytes
     const char *hex = pkt_data.c_str();
     for (int i = 0, j=0; i < length; i++, j+=2) {
-	sscanf(hex+j, "%2hhx", &data_pkt[i]);
+    sscanf(hex+j, "%2hhx", &data_pkt[i]);
     }
 
     // attempt to cast the pkt_data back to the packet
@@ -511,20 +486,20 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
 
     /* TODO this works, find out why when i dont push the header and take away that it doesnt. */
-    Packet *new_pkt = pkt->push_mac_header(14);
-    memcpy((void*)new_pkt->data(), mach, 14);
-    new_pkt->pull(14);
+    Packet *new_pkt = pkt->push_mac_header(DEFAULT_MAC_LEN);
+    memcpy((void*)new_pkt->data(), mach, DEFAULT_MAC_LEN);
+    new_pkt->pull(DEFAULT_MAC_LEN);
 
 
     /* Checksums - the devil is in the details */
     // we know its IP because we enforce that in the config, but now we need to handle the checksums
     // for the protocols above us
     const click_ether *mch2 = (click_ether *) pkt->data();
-    //click_ip *iph = reinterpret_cast<click_ip *>(pkt->data()+14);
+    //click_ip *iph = reinterpret_cast<click_ip *>(pkt->data()+DEFAULT_MAC_LEN);
     click_ip *iph = pkt->ip_header();
     std::cout << "src: " << IPAddress(iph->ip_src.s_addr).s().c_str() << " dst: " << IPAddress(iph->ip_dst.s_addr).s().c_str() << "\n";
 
-    std::cout << "ip proto: " << iph->ip_p << " ? " << IP_PROTO_ICMP << "\n"; 
+    std::cout << "ip proto: " << iph->ip_p << " ? " << IP_PROTO_ICMP << "\n";
     if (iph->ip_p == IP_PROTO_TCP)
         tcp_check(pkt);
     else if (iph->ip_p == IP_PROTO_UDP)
@@ -532,11 +507,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     else if (iph->ip_p == IP_PROTO_ICMP)
         icmp_check(pkt);
 
-    // do lowest protocol last for checksum
-    unsigned hlen = iph->ip_hl << 2;
-    iph->ip_sum = 0;
-    iph->ip_sum = click_in_cksum((unsigned char *)iph, hlen);
-  
+    ip_check(pkt);
 
     // ship it
     output(0).push(pkt);
@@ -564,9 +535,9 @@ int SSSMsg::initialize(ErrorHandler *errh) {
 
 /*
  * Generates a SSSMsg packet from a packet.
- * 
+ *
  * Requires that the packet is IP, and has been checked.
- * 
+ *
  * So we recieve a packet, and we need create the encoded chunks
  * then send that out to each of the connected ports.
  */
