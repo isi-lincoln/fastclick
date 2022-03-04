@@ -272,26 +272,26 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     int version = 0;
     int flowid = _flowid++; // see notes on randomizing this for fun
 
-    printf("after ssspkt settings\n");
+    //printf("after ssspkt settings\n");
 
     // getting packet data as hex string.
     // https://github.com/kohler/click/blob/593d10826cf5f945a78307d095ffb0897de515de/elements/standard/print.cc#L151
     // we are not going to encoded on the data portion of the packet
     std::string str_pkt_data = BytesToHex(p->data()+header_length, data_length);
-    printf("pkt as hex: %s\n", str_pkt_data.c_str());
+    //printf("pkt as hex: %s\n", str_pkt_data.c_str());
 
     // do the hard work to convert data to encoded forms
     std::vector<std::string> encoded = SSSMsg::SplitData(_threshold, _shares, str_pkt_data);
 
     /* TODO: Development Code to Verify Correctness */
     // re create a backup with the minimum number of shares to meet threshold from original
-    std::vector<std::string> backup = std::vector<std::string>(encoded.begin() + (_shares-_threshold), encoded.end());
-    std::vector<std::string> backup2 = std::vector<std::string>(encoded.begin() + (_shares-_threshold), encoded.end());
+    //std::vector<std::string> backup = std::vector<std::string>(encoded.begin() + (_shares-_threshold), encoded.end());
+    //std::vector<std::string> backup2 = std::vector<std::string>(encoded.begin() + (_shares-_threshold), encoded.end());
 
-    std::string rec_pkt_data = SSSMsg::RecoverData(_threshold, backup);
+    //std::string rec_pkt_data = SSSMsg::RecoverData(_threshold, backup);
 
     // assert that the strings are the same value
-    assert(str_pkt_data.compare(rec_pkt_data)==0);
+    //assert(str_pkt_data.compare(rec_pkt_data)==0);
     //printf("recover: %s\n", rec_pkt_data.c_str());
 
     SSSProto *ssspkt_arr[_shares];
@@ -306,15 +306,9 @@ void SSSMsg::encrypt(int ports, Packet *p) {
         ssspkt_arr[i]->Shareid = i;
         memset(ssspkt_arr[i]->Data, 0, SSSPROTO_DATA_LEN);
 
-        std::cout << "data length: " << data_length << " encode length: " << encoded[i].size() << "\n";
+        //std::cout << "data length: " << data_length << " encode length: " << encoded[i].size() << "\n";
 
         memcpy(ssspkt_arr[i]->Data, &encoded[i][0], encoded[i].size());
-
-        std::cout << "after: " << "\n";
-        for (int j = 0; j < encoded[i].size(); j++){
-            std::cout << ssspkt_arr[i]->Data[j];
-        }
-        std::cout << "\n";
 
         // create our new packet
         WritablePacket *pkt = Packet::make(ssspkt_arr[i], sizeof(SSSProto)+header_length);
@@ -401,6 +395,11 @@ void SSSMsg::decrypt(int ports, Packet *p) {
         // packet has already been completed, dont do anything with this one
         if (comp_it != comp_map.end()){
                 printf("finished sending coded packet. dropping this one\n");
+    		completed[host][flow]++;
+		// we've already sent the file, and recieved all the messages, so delete from completed
+		if (completed[host][flow] == _shares-_threshold){
+			completed[host].erase(flow);
+		}
                 cache_mut.unlock();
                 return;
         }
@@ -470,7 +469,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     //
     click_ip *new_iph = pkt->ip_header();
 
-    std::cout << "ip proto: " << new_iph->ip_p << " ? " << IP_PROTO_ICMP << "\n";
+    //std::cout << "ip proto: " << new_iph->ip_p << " ? " << IP_PROTO_ICMP << "\n";
     if (new_iph->ip_p == IP_PROTO_TCP)
         tcp_check(pkt);
     else if (new_iph->ip_p == IP_PROTO_UDP)
@@ -483,9 +482,9 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // ship it
     output(0).push(pkt);
 
-
+    storage[host].erase(flow);
     // prevent sending duplicated packets after we've reached threshold shares
-    completed[host][flow] = "fin";
+    completed[host][flow] = 1;
     cache_mut.unlock();
 
 }

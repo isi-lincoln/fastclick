@@ -44,7 +44,7 @@ class SSSMsg : public Element {
 		~SSSMsg();
 
     		std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<std::string> > > storage; 
-    		std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::string> > completed; 
+    		std::unordered_map<uint32_t, std::unordered_map<uint32_t, uint32_t> > completed; 
         	std::mutex cache_mut; // mutex for critical section
 
 		const char *class_name() const { return "SSSMsg"; }
