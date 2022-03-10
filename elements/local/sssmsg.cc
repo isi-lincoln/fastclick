@@ -115,41 +115,46 @@ std::string SSSMsg::RecoverData(int threshold, std::vector<std::string> shares) 
 }
 
 // update tcp checksum
-void tcp_check(WritablePacket *p) {
-  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+DEFAULT_MAC_LEN);
+void tcp_check(WritablePacket *p, uint16_t hdr_len) {
+  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+hdr_len);
   click_tcp *tcp = reinterpret_cast<click_tcp *>(ip + 1);
   tcp->th_sum = 0;
-  unsigned short len = p->length()-DEFAULT_MAC_LEN-sizeof(click_ip);
+  unsigned short len = p->length()-hdr_len-sizeof(click_ip);
   unsigned csum = click_in_cksum((uint8_t *)tcp, len);
   tcp->th_sum = click_in_cksum_pseudohdr(csum, ip, len);
 }
 
 // update udp checksum
-void udp_check(WritablePacket *p) {
-  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+DEFAULT_MAC_LEN);
+void udp_check(WritablePacket *p, uint16_t hdr_len) {
+  click_ip *ip = reinterpret_cast<click_ip *>(p->data()+hdr_len);
   click_udp *udp = reinterpret_cast<click_udp *>(ip + 1);
   udp->uh_sum = 0;
-  unsigned short len = p->length()-DEFAULT_MAC_LEN-sizeof(click_ip);
+  unsigned short len = p->length()-hdr_len-sizeof(click_ip);
   unsigned csum = click_in_cksum((uint8_t *)udp, len);
   udp->uh_sum = click_in_cksum_pseudohdr(csum, ip, len);
 }
 
 // update icmp checksum
-void icmp_check(WritablePacket *p){
-    click_icmp *icmph = p->icmp_header();
+void icmp_check(WritablePacket *p, uint16_t hdr_len){
+    //click_icmp *icmph = p->icmp_header(); // this requires a annotation
+    click_ip *ip = reinterpret_cast<click_ip *>(p->data()+hdr_len);
+    click_icmp *icmph = reinterpret_cast<click_icmp *>(ip + 1);
     std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
     icmph->icmp_cksum = 0;
-    icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, p->length() - p->transport_header_offset());
+    icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, p->length() - (hdr_len+sizeof(click_ip)));
     std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
 }
 
 // update IP packet checksum
 void ip_check(WritablePacket *p) {
-    click_ip *iph = reinterpret_cast<click_ip *>(p->data());
+    //click_ip *iph = reinterpret_cast<click_ip *>(p->data());
+    click_ip *iph = (click_ip *) p->data();
 
-    unsigned hlen = iph->ip_hl << 2;
+    //unsigned hlen = iph->ip_hl << 2;
+    //unsigned hlen = iph->ip_hl;
     iph->ip_sum = 0;
-    iph->ip_sum = click_in_cksum((unsigned char *)iph, hlen);
+    //iph->ip_sum = click_in_cksum((unsigned char *)iph, hlen);
+    iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
 }
 
 // allow the user to configure the shares and threshold amounts
@@ -239,6 +244,14 @@ void SSSMsg::encrypt(int ports, Packet *p) {
         return;
     }
 
+    const click_ether *mch = (click_ether *) p->data();
+    const unsigned char *mh = p->mac_header();
+
+    if (htons(mch->ether_type) != ETHERTYPE_IP) {
+        fprintf(stderr, "secret split handling non-ipv4 packet: %x\n", htons(mch->ether_type));
+        return;
+    }
+
     if (!p->has_network_header()) {
         fprintf(stderr, "secret split doesnt know how to handle this packet (no L3).\n");
         return;
@@ -254,8 +267,6 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     // the headers and checksum
 
     // we want to retrieve the ip header information, mainly the ipv4 dest
-    const click_ether *mch = (click_ether *) p->data();
-    const unsigned char *mh = p->mac_header();
     const unsigned char *nh = p->network_header();
     const click_ip *iph = p->ip_header();
 
@@ -320,16 +331,17 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 	Packet *ip_pkt = pkt->push(sizeof(click_ip));
 	memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
 
+	//ip_pkt->set_ip_header(iph, sizeof(click_ip));
+
+	// TODO: this should set the network header
+	// https://github.com/kohler/click/blob/master/include/click/packet.hh#L1847
+	// https://github.com/kohler/click/blob/master/include/click/packet.hh#L1793
 	Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
 	memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
 
+
         // update checksum for the next host in the path
-        ip_check(pkt);
-
-
-        /*  TODO ****** validate that we are sending correct data ********** */
-        // we want to retrieve the ip header information, mainly the ipv4 dest
-        //const click_ether *mch = (click_ether *) new_pkt->data();
+        //ip_check(pkt);
 
         // remove extra unused data at end of packet
         pkt->take(SSSPROTO_DATA_LEN-encoded[i].size());
@@ -351,15 +363,37 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 void SSSMsg::decrypt(int ports, Packet *p) {
 
     printf("in decrypt\n");
+    // packet is too large
+    if (p->length() > SSSPROTO_DATA_LEN) {
+        fprintf(stderr, "packet length too large for secret splitting\n");
+        return;
+    }
 
-    //struct SSSProto *ssspkt = new SSSProto;
+    // saftey checks
+    if (!p->has_mac_header()) {
+        fprintf(stderr, "secret split doesnt know how to handle this packet (no L2).\n");
+        return;
+    }
 
-    // we want to retrieve the headers to save for later
     const click_ether *mch = (click_ether *) p->data();
     const unsigned char *mach = p->mac_header();
-    //const click_ip *iph = p->ip_header();
-    const click_ip *iph = (click_ip*)(p->data()+sizeof(click_ether));
 
+    if (htons(mch->ether_type) != ETHERTYPE_IP) {
+        fprintf(stderr, "secret split handling non-ipv4 packet: %x\n", htons(mch->ether_type));
+        return;
+    }
+    //std::cout << EtherAddress(mch->ether_shost).unparse().c_str() << " -> " << EtherAddress(mch->ether_dhost).unparse().c_str() << "\n";
+    //printf("%s -> %s\n", IPAddress(iph->ip_src.s_addr).s().c_str(), IPAddress(iph->ip_dst.s_addr).s().c_str());
+    
+    if (!p->has_network_header()) {
+        fprintf(stderr, "secret split doesnt know how to handle this packet (no L3).\n");
+        return;
+    }
+
+    // we want to retrieve the headers to save for later
+    // This requires the marking of the ip packet
+    const click_ip *iph = p->ip_header();
+    //const click_ip *iph = (click_ip*)(p->data()+sizeof(click_ether));
     unsigned long iplen = iph->ip_hl << 2;
     unsigned long total_length = p->length();
     unsigned long header_length = DEFAULT_MAC_LEN + iplen;
@@ -468,17 +502,29 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // we know its IP because we enforce that in the config, but now we need to handle the checksums
     // for the protocols above us
     //
-    click_ip *new_iph = pkt->ip_header();
+    //uint16_t ip_proto = htons(iph->ip_p);
+    /*
+    uint8_t ip_proto = (uint8_t)iph->ip_p;
+    std::cout << "hdr: " << iph->ip_hl << " protocol: " << ip_proto << " offset: " << iph->ip_off <<"\n";
+    if (ip_proto == IP_PROTO_TCP){
+	std::cout << "tcp\n";
+        tcp_check(pkt, sizeof(click_ether));
+    }
+    else if (ip_proto == IP_PROTO_UDP) {
+	std::cout << "udp\n";
+        udp_check(pkt, sizeof(click_ether));
+    }
+    else if (ip_proto == IP_PROTO_ICMP) {
+	std::cout << "icmp\n";
+        icmp_check(pkt, sizeof(click_ether));
+    }
+    */
 
-    //std::cout << "ip proto: " << new_iph->ip_p << " ? " << IP_PROTO_ICMP << "\n";
-    if (new_iph->ip_p == IP_PROTO_TCP)
-        tcp_check(pkt);
-    else if (new_iph->ip_p == IP_PROTO_UDP)
-        udp_check(pkt);
-    else if (new_iph->ip_p == IP_PROTO_ICMP)
-        icmp_check(pkt);
-
-    ip_check(pkt);
+    uint16_t oldchk = iph->ip_sum;
+    std::cout << IPAddress(iph->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(iph->ip_dst.s_addr).s().c_str() << "\n";
+    //ip_check(pkt);
+    uint16_t newchk = iph->ip_sum;
+    std::cout << "chcksum: " << oldchk << " vs " << newchk << "\n";
 
     // ship it
     output(0).push(pkt);

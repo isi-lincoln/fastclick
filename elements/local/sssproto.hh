@@ -2,7 +2,7 @@
 #define SSSPROTO_HH
 
 // at another point lets do this dynamic and handle jumbos
-#define SSSPROTO_DATA_LEN 1200 // max length
+#define SSSPROTO_DATA_LEN 5000 // max length
 
 /*
  * SSSProto will encapsulate an IP packet 

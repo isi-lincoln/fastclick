@@ -32,7 +32,7 @@ classifier3	:: Classifier(
 	);
 
 ipclassifier	:: IPClassifier(
-	dst host 192.168.0.2
+	dst host 192.168.2.2
 	);
 
 data_in			::	FromDevice(eth1);
@@ -51,6 +51,10 @@ q3	:: ThreadSafeQueue(200);
 q4	:: ThreadSafeQueue(200);
 
 chip	:: MarkIPHeader(14);
+chip1	:: MarkIPHeader(14);
+chip2	:: MarkIPHeader(14);
+chip3	:: MarkIPHeader(14);
+chip4	:: MarkIPHeader(14);
 
 encrypt	:: SSSMsg(3,2,0);
 decrypt	:: SSSMsg(3,2,1);
@@ -58,7 +62,7 @@ decrypt	:: SSSMsg(3,2,1);
 
 /* handle the arp requests */
 
-data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.0.2 192.168.0.0/24 04:70:00:00:00:01)	->	q1;
+data_in		->	classifier0[0]	->	Print("a")	->	ARPResponder(192.168.2.2 192.168.2.0/24 04:70:00:00:00:01)	->	q1;
 
 left_in_device	->	classifier1[0]	->	Print("b")	->	ARPResponder(10.0.0.1 10.0.0.0/24 04:70:00:00:00:10)	->	q2;
 center_in_device ->	classifier2[0]	->	Print("c")	->	ARPResponder(10.0.1.1 10.0.1.0/24 04:70:00:00:00:20)	->	q3;
@@ -71,18 +75,18 @@ right_in_device ->	classifier3[0]	->	Print("d")	->	ARPResponder(10.0.2.1 10.0.2.
 classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]	->	IPPrint("ip pkt")	->	encrypt;
 
 // then these will be the encoded chunks
-encrypt[0]	->	EtherRewrite(04:70:00:00:00:10, 04:70:00:00:00:11)	->	q2;
-encrypt[1]	->	EtherRewrite(04:70:00:00:00:20, 04:70:00:00:00:21)	->	q3;
-encrypt[2]	->	EtherRewrite(04:70:00:00:00:30, 04:70:00:00:00:31)	->	q4;
+encrypt[0]	->	EtherRewrite(04:70:00:00:00:10, 52:54:00:f7:4a:12)	->	q2;
+encrypt[1]	->	EtherRewrite(04:70:00:00:00:20, 52:54:00:3b:be:fa)	->	q3;
+encrypt[2]	->	EtherRewrite(04:70:00:00:00:30, 52:54:00:44:ff:8e)	->	q4;
 
 
 // if the packet is coming over one of or other links, it means its already encrypted and ready to be decrypted.
-classifier1[1]	->	EtherRewrite(04:70:00:00:00:11, 04:70:00:00:00:10)      ->	decrypt;
-classifier2[1]	->	EtherRewrite(04:70:00:00:00:21, 04:70:00:00:00:20)      ->	decrypt;
-classifier3[1]	->	EtherRewrite(04:70:00:00:00:31, 04:70:00:00:00:30)      ->	decrypt;
+classifier1[1]	->	EtherRewrite(04:70:00:00:00:11, 04:70:00:00:00:10)      ->	chip1	->	decrypt;
+classifier2[1]	->	EtherRewrite(04:70:00:00:00:21, 04:70:00:00:00:20)      ->	chip2	->	decrypt;
+classifier3[1]	->	EtherRewrite(04:70:00:00:00:31, 04:70:00:00:00:30)      ->	chip3	->	decrypt;
 
 
-decrypt	->	EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)	->	q1;
+decrypt	->	chip4	->	IPPrint("after")	->	EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)	->	q1;
 
 // now send out everything from our queues
 q1	->	data_out;
