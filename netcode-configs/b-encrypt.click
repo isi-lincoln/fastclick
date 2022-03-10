@@ -51,6 +51,10 @@ q3	:: ThreadSafeQueue(200);
 q4	:: ThreadSafeQueue(200);
 
 chip	:: MarkIPHeader(14);
+chip1	:: MarkIPHeader(14);
+chip2	:: MarkIPHeader(14);
+chip3	:: MarkIPHeader(14);
+chip4	:: MarkIPHeader(14);
 
 encrypt	:: SSSMsg(3,2,0);
 decrypt	:: SSSMsg(3,2,1);
@@ -71,18 +75,18 @@ right_in_device ->	classifier3[0]	->	Print("d")	->	ARPResponder(10.0.2.1 10.0.2.
 classifier0[1]	->	Print("e")	->	chip	->	ipclassifier[0]	->	IPPrint("ip pkt")	->	encrypt;
 
 // then these will be the encoded chunks
-encrypt[0]	->	EtherRewrite(04:70:00:00:00:11, 04:70:00:00:00:10)	->	q2;
-encrypt[1]	->	EtherRewrite(04:70:00:00:00:21, 04:70:00:00:00:20)	->	q3;
-encrypt[2]	->	EtherRewrite(04:70:00:00:00:31, 04:70:00:00:00:30)	->	q4;
+encrypt[0]	->	EtherRewrite(04:70:00:00:00:11, 52:54:00:81:37:6f)	->	q2;
+encrypt[1]	->	EtherRewrite(04:70:00:00:00:21, 52:54:00:fa:8c:29)	->	q3;
+encrypt[2]	->	EtherRewrite(04:70:00:00:00:31, 52:54:00:7d:7b:ba)	->	q4;
 
 
 // if the packet is coming over one of or other links, it means its already encrypted and ready to be decrypted.
-classifier1[1]	->	EtherRewrite(04:70:00:00:00:10, 04:70:00:00:00:11)      ->	decrypt;
-classifier2[1]	->	EtherRewrite(04:70:00:00:00:20, 04:70:00:00:00:21)      ->	decrypt;
-classifier3[1]	->	EtherRewrite(04:70:00:00:00:30, 04:70:00:00:00:31)      ->	decrypt;
+classifier1[1]	->	EtherRewrite(52:54:00:81:37:6f, 04:70:00:00:00:11)      ->	chip1	->	decrypt;
+classifier2[1]	->	EtherRewrite(52:54:00:fa:8c:29, 04:70:00:00:00:21)      ->	chip2	->	decrypt;
+classifier3[1]	->	EtherRewrite(52:54:00:7d:7b:ba, 04:70:00:00:00:31)      ->	chip3	->	decrypt;
 
 
-decrypt	->	EtherRewrite(04:70:00:00:00:02, 04:70:00:00:02:01)	->	q1;
+decrypt	->	chip4	->	IPPrint("after")	->	EtherRewrite(04:70:00:00:00:02, 04:70:00:00:02:01)	->	q1;
 
 // now send out everything from our queues
 q1	->	data_out;
