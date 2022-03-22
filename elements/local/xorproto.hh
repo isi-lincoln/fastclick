@@ -57,8 +57,9 @@
 
 struct XORProto {
 #if CLICK_BYTE_ORDER == CLICK_BIG_ENDIAN
-	unsigned int Len : 13; // sizeof(A)
+	unsigned long Len : 13; // sizeof(A)
 	unsigned long Flowid: 16; // flow identifier
+        unsigned int Pktid: 3; // pkt identifier, atmost 8
 	unsigned long BPadd: 13; // sizeof(A)-sizeof(B)
 	unsigned long CPadd: 13; // sizeof(A)-sizeof(C)
 	unsigned int Version : 3; // protocol version
@@ -66,12 +67,13 @@ struct XORProto {
 	unsigned int Version : 3;
 	unsigned long CPadd: 13;
 	unsigned long BPadd: 13;
+        unsigned int Pktid: 3;
 	unsigned long Flowid: 16;
-	unsigned int Len : 13;
+	unsigned long Len : 13;
 #else
 #error "Undefined Byte Order!"
 #endif
-	char Data[XORPROTO_DATA_LEN];
+	unsigned char Data[XORPROTO_DATA_LEN];
 } CLICK_SIZE_PACKED_ATTRIBUTE;
 
 #endif
