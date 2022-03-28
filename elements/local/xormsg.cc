@@ -160,9 +160,10 @@ void XORMsg::encode(int ports, Packet *p) {
     }
 
     std::sort( pkt_vec.begin( ), pkt_vec.end( ), [ ]( const Packet* lhs, const Packet* rhs ) {
-        return lhs->length() < rhs->length();
+        return lhs->length() > rhs->length();
     });
     unsigned long longest= pkt_vec[0]->length();
+    printf("pkt lengths: a: %ld, b: %ld, c: %ld\n", pkt_vec[0]->length(), pkt_vec[1]->length(), pkt_vec[2]->length());
 
     // create an array of xor header packets for sending out
     XORProto *xorpkt_arr[3];
@@ -175,6 +176,7 @@ void XORMsg::encode(int ports, Packet *p) {
 
     unsigned long bpad = longest-pkt_vec[1]->length();
     unsigned long cpad = longest-pkt_vec[2]->length();
+    printf("setting pads: b: %ld, c: %ld\n", bpad, cpad);
 
     // i'll start with hand crafting these
     xorpkt_arr[0] = new XORProto;
@@ -448,7 +450,7 @@ void XORMsg::decode(int ports, Packet *p) {
     }
 
     std::sort( pkt_vec.begin( ), pkt_vec.end( ), [ ]( const XORProto* lhs, const XORProto* rhs ) {
-        return lhs->Pktid < rhs->Pktid;
+        return lhs->Pktid > rhs->Pktid;
     });
 
     // showuld have 3 in here now
@@ -461,6 +463,8 @@ void XORMsg::decode(int ports, Packet *p) {
 
     unsigned long bpad = xorpkt->BPadd;
     unsigned long cpad = xorpkt->CPadd;
+
+    printf("longest: %ld, bpad: %ld, cpad: %ld\n", longest, bpad, cpad);
 
     WritablePacket* a = Packet::make(NULL, longest);
     WritablePacket* b = Packet::make(NULL, longest-bpad);
