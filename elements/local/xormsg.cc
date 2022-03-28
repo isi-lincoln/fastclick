@@ -18,6 +18,7 @@
 #include <assert.h>    // sanity check
 #include<iostream>
 #include <random>  // random device
+#include <algorithm> // sort
 
 CLICK_DECLS
 
@@ -97,7 +98,11 @@ void XORMsg::encode(int ports, Packet *p) {
 
     int version = 0;
 
-    printf("after var sets\n");
+    // we need to serialize the packet, so we will serialize it as a string
+    unsigned char* dtemp;
+    dtemp = (unsigned char*) malloc(total_length);
+    memcpy(dtemp, p->data(), total_length);
+    std::string sdtemp((char*) dtemp, total_length);
 
     // so now we are going to be using a mutex and our class map
     // to store packets until we reach the window threshold (3).
@@ -111,7 +116,7 @@ void XORMsg::encode(int ports, Packet *p) {
     // if destination missing from packet send, add packet - wait for more.
     if (t == pkt_send.end()) {
         printf("[none] adding %s to list\n", IPAddress(dst_host).s().c_str());
-        pkt_send[dst_host].push_back(p);
+        pkt_send[dst_host].push_back(sdtemp);
         send_mut.unlock();
         return;
     }
@@ -121,7 +126,7 @@ void XORMsg::encode(int ports, Packet *p) {
     // add this packet to the send and wait for more
     if (pkt_send[dst_host].size()+1 < _ifaces) {
         printf("[under] adding %s to list\n", IPAddress(dst_host).s().c_str());
-        pkt_send[dst_host].push_back(p);
+        pkt_send[dst_host].push_back(sdtemp);
         send_mut.unlock();
         return;
     }
@@ -130,28 +135,34 @@ void XORMsg::encode(int ports, Packet *p) {
     // this packet we are operating on now.
     printf("have enough packets to begin xor'ing\n");
 
+    /*
+    for (int i = 0; i < total_length; i++){
+         printf("%02x", *(p->data()+i)&0xff);
+    }
+    printf("\n");
+    for (int i = 0; i < total_length; i++){
+         printf("%02x", *(sdtemp.c_str()+i)&0xff);
+    }
+    printf("\n");
+    */
+
     // now we are going to take those packets out of the map, and orientate
     // this vector such that the longest packet in bytes is at the front of
     // the vector while the smallest is at the back.  This will help us with
     // applying padding of packets given we know with respect to the largest,
     // the total size ordering and how to apply the pad.
     std::vector<Packet*> pkt_vec;
-    unsigned long longest = p->length();
-    unsigned long smallest = p->length();
     pkt_vec.push_back(p);
 
     for (auto x : pkt_send[dst_host]) {
-        if (x->length() >= longest) {
-            longest = x->length();
-            pkt_vec.insert(pkt_vec.begin(), x); // front of queue
-            continue;
-        }
-        if (x->length() <= smallest) {
-            smallest = x->length();
-            pkt_vec.push_back(x); // back of the queue
-            continue;
-        }
+        Packet *data = Packet::make(x.c_str(), x.length());
+        pkt_vec.push_back(data);
     }
+
+    std::sort( pkt_vec.begin( ), pkt_vec.end( ), [ ]( const Packet* lhs, const Packet* rhs ) {
+        return lhs->length() < rhs->length();
+    });
+    unsigned long longest= pkt_vec[0]->length();
 
     // create an array of xor header packets for sending out
     XORProto *xorpkt_arr[3];
@@ -178,8 +189,8 @@ void XORMsg::encode(int ports, Packet *p) {
 
     unsigned char newB[longest];
     unsigned char newC[longest];
-    memcpy(&newB, pkt_vec[1], longest-bpad);
-    memcpy(&newC, pkt_vec[2], longest-cpad);
+    memcpy(&newB, pkt_vec[1]->data(), longest-bpad);
+    memcpy(&newC, pkt_vec[2]->data(), longest-cpad);
 
     // very performance inefficient, better to do a single insert than many.
     // better to maximize rng generation    
@@ -187,6 +198,7 @@ void XORMsg::encode(int ports, Packet *p) {
     // this is the end of the data after we put() to make the packet longest.
     // so this loop is going from end_data() towards data() filling in unallocated
     // memory with some psuedo rng.
+
     for (int i = longest-bpad; i < longest; i++) {
        uint8_t rng = rd() & 0xff; // this is 32 bits, so we could be smart or lazy
        memcpy(&newB+i, &rng, sizeof(uint8_t));
@@ -195,6 +207,26 @@ void XORMsg::encode(int ports, Packet *p) {
        uint8_t rng = rd() & 0xff; // this is 32 bits, so we could be smart or lazy
        memcpy(&newC+i, &rng, sizeof(uint8_t));
     }
+
+
+    printf("a\n");
+    for (int i = 0; i < longest; i++){
+        uint8_t t = (*(pkt_vec[0]->data()+i))&0xff;  // a ^ b ^ c
+        printf("%02x", t);
+    }
+    printf("\n");
+    printf("b\n");
+    for (int i = 0; i < longest; i++){
+        uint8_t t = (*(newB+i))&0xff;  // a ^ b ^ c
+        printf("%02x", t);
+    }
+    printf("\n");
+    printf("c\n");
+    for (int i = 0; i < longest; i++){
+        uint8_t t = (*(newC+i))&0xff;  // a ^ b ^ c
+        printf("%02x", t);
+    }
+    printf("\n");
 
 
     // now we add to them.
@@ -219,26 +251,31 @@ void XORMsg::encode(int ports, Packet *p) {
         const unsigned char *cp = newC;
         switch(i) {
             case 0:
+                 printf("x\n");
                  for (int i = 0; i < longest; i++){
-                     uint8_t t = (*(ap+i)^*(bp+i)^*(cp+i))&0xff;
-                     //printf("*: %x ", t);
+                     uint8_t t = (*(ap+i)^*(bp+i)^*(cp+i))&0xff;  // a ^ b ^ c
                      memcpy((void*)(dp+i), &t, sizeof(uint8_t)); 
+                     printf("%02x", t);
                  }
                  printf("\n");
                  break;
             case 1:
+                 printf("y\n");
                  for (int i = 0; i < longest; i++){
-                     uint8_t t = (*(ap+i)^*(bp+i))&0xff;
-                     //printf("( %x^%x) %x ", *(ap+i), *(bp+i), t);
+                     uint8_t t = (*(ap+i)^*(bp+i))&0xff;	  // a ^ b
                      memcpy((void*)(dp+i), &t, sizeof(uint8_t)); 
+                     printf("%02x", t);
                  }
                  printf("\n");
                  break;
             case 2:
+                 printf("z\n");
                  for (int i = 0; i < longest; i++){
-                     uint8_t t = (*(bp+i)^*(cp+i))&0xff;
+                     uint8_t t = (*(bp+i)^*(cp+i))&0xff;	  // b ^ c
                      memcpy((void*)(dp+i), &t, sizeof(uint8_t)); 
+                     printf("%02x", t);
                  }
+                 printf("\n");
                  break;
             default:
                  break;
@@ -337,8 +374,8 @@ void XORMsg::decode(int ports, Packet *p) {
 
     // allocate memory for the xor data to store in vector.
     unsigned char* dtemp;
-    dtemp = (unsigned char*) malloc(encode_length);
-    memcpy(dtemp, p->data()+header_length, encode_length);
+    dtemp = (unsigned char*) malloc(sizeof(XORProto)+encode_length);
+    memcpy(dtemp, p->data()+header_length, sizeof(XORProto)+encode_length); // only want the xor header and data
 
     // lock before we start working on map
     recv_mut.lock();
@@ -350,6 +387,10 @@ void XORMsg::decode(int ports, Packet *p) {
         printf("id: %ld\n", pktid);
         pkt_recv[dst_host][flow].push_back(dtemp);
         recv_mut.unlock();
+	for (int i = 0; i < data_length; i++){
+	     printf("%02x", *(p->data()+i)&0xff);
+	}
+        printf("\n");
         return;
     }
 
@@ -363,6 +404,10 @@ void XORMsg::decode(int ports, Packet *p) {
         printf("id: %ld\n", pktid);
         pkt_recv[dst_host][flow].push_back(dtemp);
         recv_mut.unlock();
+	for (int i = 0; i < data_length; i++){
+	     printf("%02x", *(p->data()+i)&0xff);
+	}
+        printf("\n");
         return;
     }
 
@@ -376,6 +421,10 @@ void XORMsg::decode(int ports, Packet *p) {
         printf("id: %ld\n", pktid);
         pkt_recv[dst_host][flow].push_back(dtemp);
         recv_mut.unlock();
+	for (int i = 0; i < data_length; i++){
+	     printf("%02x", *(p->data()+i)&0xff);
+	}
+        printf("\n");
         return;
     }
 
@@ -384,101 +433,94 @@ void XORMsg::decode(int ports, Packet *p) {
     // so now we have all packets, lets put them in a vector based on their pktid
     std::vector<const XORProto*> pkt_vec;
     pkt_vec.push_back(xorpkt);
-    unsigned int tail = xorpkt->Pktid;
-    unsigned int head = xorpkt->Pktid;
-    printf("a\n");
 
-    //std::vector<Packet*> queue = pkt_recv[dst_host][flow];
-
-
-
+    /*
     printf("id: %ld\n", pktid);
-    for (auto & x : pkt_recv[dst_host][flow]) {
-        //Packet *xx = Packet::make(x, sizeof(x));
-    	const XORProto *xorp = reinterpret_cast<const XORProto *>(x);
-        //printf("mem: %x, xo: %x\n", x, xorp);
-        printf("flow: %lu, id: %ld, leng: %lu\n", xorp->Flowid, xorp->Pktid, xorp->Len);
-        if (xorp->Pktid >= tail) {
-            pkt_vec.push_back(xorp);
-            tail = xorp->Pktid;
-        }
-        else if (xorp->Pktid < head) {
-            pkt_vec.insert(pkt_vec.begin(), xorp);
-            head = xorp->Pktid;
-        }
+    for (int i = 0; i < data_length; i++){
+	printf("%x", *(p->data()+i)&0xff);
     }
+    printf("\n");
+    */
+
+    for (auto & x : pkt_recv[dst_host][flow]) {
+    	const XORProto *xorp = reinterpret_cast<const XORProto *>(x);
+        pkt_vec.push_back(xorp);
+    }
+
+    std::sort( pkt_vec.begin( ), pkt_vec.end( ), [ ]( const XORProto* lhs, const XORProto* rhs ) {
+        return lhs->Pktid < rhs->Pktid;
+    });
 
     // showuld have 3 in here now
     for (auto & x : pkt_vec) {
         printf("flow: %lu, pkt: %d\n", x->Flowid, x->Pktid);
     }
 
-    // 1: pkt1 ^ pkt2 ^ pkt3
-    // 2: pkt1 ^ pkt2 (xor 1 computes pkt3)
-    // 3: pkt2 ^ pkt3 (xor 1 computes pkt1) [final step is take 2,3 computations xor 1 to get pk2]
  
     unsigned long longest = xorpkt->Len;
+
+    unsigned long bpad = xorpkt->BPadd;
+    unsigned long cpad = xorpkt->CPadd;
+
     WritablePacket* a = Packet::make(NULL, longest);
-    WritablePacket* b = Packet::make(NULL, longest);
-    WritablePacket* c = Packet::make(NULL, longest);
+    WritablePacket* b = Packet::make(NULL, longest-bpad);
+    WritablePacket* c = Packet::make(NULL, longest-cpad);
 
-    //const unsigned char *xp = reinterpret_cast<const XORProto *>(a->data()+header_length);
-    //const unsigned char *yp = reinterpret_cast<const XORProto *>(b->data()+header_length);
-    //const unsigned char *zp = reinterpret_cast<const XORProto *>(c->data()+header_length);
-
-    const unsigned char *xp = pkt_vec[0]->Data;
-    const unsigned char *yp = pkt_vec[1]->Data;
-    const unsigned char *zp = pkt_vec[2]->Data;
+    const unsigned char *xp = pkt_vec[0]->Data; // a^b^c
+    const unsigned char *yp = pkt_vec[1]->Data; // a^b
+    const unsigned char *zp = pkt_vec[2]->Data; // b^c
 
     const unsigned char *ap = a->data();
     const unsigned char *bp = b->data();
     const unsigned char *cp = c->data();
 
     printf("c\n");
+    // 1: pkt1 ^ pkt2 ^ pkt3
 
-    // compute solution to matrix
+    // compute solution to matrix - solve for c (a ^ b ^ c ^ ( a ^ b)) => c
+    // C: pkt1 ^ pkt2 (xor 1 computes pkt3)
     for (int i = 0; i < longest; i++){
         uint8_t t = (*(xp+i)^*(yp+i))&0xff;
-        printf("c: %x ", t);
+        printf("%02x", t);
         memcpy((void*)(cp+i), &t, sizeof(uint8_t)); 
     }
     printf("\n");
-    for (int i = 0; i < longest; i++){
+
+    printf("a\n");
+    // solve for a ( a ^ b ^ c ^ (b ^ c ))  => a
+    // A: pkt2 ^ pkt3 (xor 1 computes pkt1)
+    for (int i = 0; i < longest-bpad; i++){
         uint8_t t = (*(xp+i)^*(zp+i))&0xff;
-        printf("a: %x ", t);
+        printf("%02x", t);
         memcpy((void*)(ap+i), &t, sizeof(uint8_t)); 
     }
     printf("\n");
-    for (int i = 0; i < longest; i++){
+
+    printf("b\n");
+    // solve for b ( a ^ b ^ ( a)) => b
+    for (int i = 0; i < longest-cpad; i++){
         uint8_t t = (*(yp+i)^*(cp+i))&0xff;
-        printf("b: %x ", t);
+        printf("%02x", t);
         memcpy((void*)(bp+i), &t, sizeof(uint8_t)); 
     }
     printf("\n");
 
-    unsigned long bpad = xorpkt->BPadd;
-    unsigned long cpad = xorpkt->CPadd;
-    b->take(bpad);
-    c->take(cpad);
-
     const click_ip *xa = reinterpret_cast<const click_ip *>(a->data()+sizeof(click_ether));
     const click_ip *xb = reinterpret_cast<const click_ip *>(b->data()+sizeof(click_ether));
-    const click_ip *xc = reinterpret_cast<const click_ip*>(c->data()+sizeof(click_ether));
+    const click_ip *xc = reinterpret_cast<const click_ip *>(c->data()+sizeof(click_ether));
 
-    WritablePacket *new_a = a->push_mac_header(header_length);
-    WritablePacket *new_b = b->push_mac_header(header_length);
-    WritablePacket *new_c = c->push_mac_header(header_length);
-    //uint16_t oldchk = iph->ip_sum;
-    std::cout << IPAddress(xa->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(xa->ip_dst.s_addr).s().c_str() << "\n";
-    std::cout << IPAddress(xb->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(xb->ip_dst.s_addr).s().c_str() << "\n";
-    std::cout << IPAddress(xc->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(xc->ip_dst.s_addr).s().c_str() << "\n";
-    printf("e\n");
+    a->set_mac_header(a->data());
+    b->set_mac_header(b->data());
+    c->set_mac_header(c->data());
 
-    output(0).push(new_a);
-    output(1).push(new_b);
-    output(2).push(new_c);
+    //std::cout << IPAddress(xa->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(xa->ip_dst.s_addr).s().c_str() << "\n";
+    //std::cout << IPAddress(xb->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(xb->ip_dst.s_addr).s().c_str() << "\n";
+    //std::cout << IPAddress(xc->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(xc->ip_dst.s_addr).s().c_str() << "\n";
 
-    printf("f\n");
+    output(0).push(a);
+    output(1).push(b);
+    output(2).push(c);
+
     recv_mut.unlock();
 }
 

@@ -42,6 +42,8 @@ chip1	:: MarkIPHeader(14);
 chip2	:: MarkIPHeader(14);
 chip3	:: MarkIPHeader(14);
 chip4	:: MarkIPHeader(14);
+chip5	:: MarkIPHeader(14);
+chip6	:: MarkIPHeader(14);
 
 encode	:: XORMsg(3,0);
 decode	:: XORMsg(3,1);
@@ -72,7 +74,10 @@ classifier1[1]	->	EtherRewrite(04:70:00:00:03:11, 04:70:00:00:00:11)      ->	chi
 classifier2[1]	->	EtherRewrite(04:70:00:00:03:21, 04:70:00:00:00:21)      ->	chip2	->	decode;
 classifier3[1]	->	EtherRewrite(04:70:00:00:03:31, 04:70:00:00:00:31)      ->	chip3	->	decode;
 
-decode	->	chip4	->	IPPrint("after")	->	EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)	->	q1;
+decode[0]       ->      chip4   ->      EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)      ->      q1;
+decode[1]       ->      chip5   ->      EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)      ->      q1;
+decode[2]       ->      chip6   ->      EtherRewrite(04:70:00:00:00:01, 04:70:00:00:01:01)      ->      q1;
+
 
 // now send out everything from our queues
 q1	->	data_out;
