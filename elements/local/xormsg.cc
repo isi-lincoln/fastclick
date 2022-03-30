@@ -131,6 +131,7 @@ void XORMsg::encode(int ports, Packet *p) {
         return;
     }
 
+
     // we've passed the previous checks, so we have 2 stored in map, plus
     // this packet we are operating on now.
     printf("have enough packets to begin xor'ing\n");
@@ -159,11 +160,13 @@ void XORMsg::encode(int ports, Packet *p) {
         pkt_vec.push_back(data);
     }
 
+    // this sort is largest to smallest based on packet length
     std::sort( pkt_vec.begin( ), pkt_vec.end( ), [ ]( const Packet* lhs, const Packet* rhs ) {
         return lhs->length() > rhs->length();
     });
+
     unsigned long longest= pkt_vec[0]->length();
-    printf("pkt lengths: a: %ld, b: %ld, c: %ld\n", pkt_vec[0]->length(), pkt_vec[1]->length(), pkt_vec[2]->length());
+    //printf("pkt lengths: a: %ld, b: %ld, c: %ld\n", pkt_vec[0]->length(), pkt_vec[1]->length(), pkt_vec[2]->length());
 
     // create an array of xor header packets for sending out
     XORProto *xorpkt_arr[3];
@@ -294,7 +297,7 @@ void XORMsg::encode(int ports, Packet *p) {
         memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
 
         // remove extra unused data at end of packet
-        new_pkt->take(XORPROTO_DATA_LEN-longest);
+        new_pkt->take(XORPROTO_DATA_LEN-longest+header_length);
 
 
         const click_ip *xa = reinterpret_cast<const click_ip *>(new_pkt->data()+sizeof(click_ether));
@@ -449,14 +452,31 @@ void XORMsg::decode(int ports, Packet *p) {
         pkt_vec.push_back(xorp);
     }
 
+    // this sort is smallest to largest based on packet id
     std::sort( pkt_vec.begin( ), pkt_vec.end( ), [ ]( const XORProto* lhs, const XORProto* rhs ) {
-        return lhs->Pktid > rhs->Pktid;
+        return lhs->Pktid < rhs->Pktid;
     });
 
     // showuld have 3 in here now
     for (auto & x : pkt_vec) {
         printf("flow: %lu, pkt: %d\n", x->Flowid, x->Pktid);
     }
+
+    printf("x\n");
+    for (int i = 0; i < total_length; i++){
+         printf("%02x", *(pkt_vec[0]->Data+i)&0xff);
+    }
+    printf("\n");
+    printf("y\n");
+    for (int i = 0; i < total_length; i++){
+         printf("%02x", *(pkt_vec[1]->Data+i)&0xff);
+    }
+    printf("\n");
+    printf("z\n");
+    for (int i = 0; i < total_length; i++){
+         printf("%02x", *(pkt_vec[2]->Data+i)&0xff);
+    }
+    printf("\n");
 
  
     unsigned long longest = xorpkt->Len;
