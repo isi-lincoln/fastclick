@@ -60,6 +60,7 @@ struct XORProto {
 	unsigned long Len : 13; // sizeof(A)
 	unsigned long Flowid: 16; // flow identifier
         unsigned int Pktid: 3; // pkt identifier, atmost 8
+	unsigned int Order: 3; // pkt order in window
 	unsigned long BPadd: 13; // sizeof(A)-sizeof(B)
 	unsigned long CPadd: 13; // sizeof(A)-sizeof(C)
 	unsigned int Version : 3; // protocol version
@@ -67,6 +68,7 @@ struct XORProto {
 	unsigned int Version : 3;
 	unsigned long CPadd: 13;
 	unsigned long BPadd: 13;
+	unsigned int Order: 3;
         unsigned int Pktid: 3;
 	unsigned long Flowid: 16;
 	unsigned long Len : 13;

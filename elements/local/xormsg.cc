@@ -152,6 +152,53 @@ void XORMsg::encode(int ports, Packet *p) {
     // the vector while the smallest is at the back.  This will help us with
     // applying padding of packets given we know with respect to the largest,
     // the total size ordering and how to apply the pad.
+    //
+    // we solve c a b  => x.Order(c), y.Order(a), z.Order(b)
+    //
+    std::vector<std::string> str_vec;
+    str_vec.push_back(sdtemp);
+
+    for (auto x : pkt_send[dst_host]) {
+        str_vec.push_back(x);
+    }
+
+    std::vector<std::string> orig_vec = str_vec;
+
+    // this sort is largest to smallest based on packet size
+    std::sort( str_vec.begin( ), str_vec.end( ), [ ]( const std::string lhs, const std::string rhs ) {
+        return lhs.size() > rhs.size();
+    });
+
+    // the mapping between length and order
+    std::vector<uint8_t> shuffle;
+    for (int i = 0; i < orig_vec.size(); i++ ) {
+        for (int j = 0; j < str_vec.size(); j++ ) {
+		if (orig_vec[i].compare(str_vec[j]) == 0){
+			shuffle.push_back(j);
+			break;
+		}
+	}
+    }
+    printf("orig order:\n");
+    for (auto x : orig_vec) {
+        printf("%ld ", x.size());
+    }
+    printf("\n");
+
+    printf("new order:\n");
+    for (auto x : shuffle) {
+        printf("%d ", x);
+    }
+    printf("\n");
+
+
+    std::vector<Packet*> pkt_vec;
+    for (auto x : str_vec) {
+        Packet *data = Packet::make(x.c_str(), x.length());
+        pkt_vec.push_back(data);
+    }
+
+    /*
     std::vector<Packet*> pkt_vec;
     pkt_vec.push_back(p);
 
@@ -164,6 +211,7 @@ void XORMsg::encode(int ports, Packet *p) {
     std::sort( pkt_vec.begin( ), pkt_vec.end( ), [ ]( const Packet* lhs, const Packet* rhs ) {
         return lhs->length() > rhs->length();
     });
+    */
 
     unsigned long longest= pkt_vec[0]->length();
     //printf("pkt lengths: a: %ld, b: %ld, c: %ld\n", pkt_vec[0]->length(), pkt_vec[1]->length(), pkt_vec[2]->length());
@@ -203,7 +251,10 @@ void XORMsg::encode(int ports, Packet *p) {
     // this is the end of the data after we put() to make the packet longest.
     // so this loop is going from end_data() towards data() filling in unallocated
     // memory with some psuedo rng.
+    //
+    printf("lb: %ld, lc: %ld, longest: %ld\n", longest-bpad, longest-cpad, longest);
 
+    /*
     for (int i = longest-bpad; i < longest; i++) {
        uint8_t rng = rd() & 0xff; // this is 32 bits, so we could be smart or lazy
        memcpy(&newB+i, &rng, sizeof(uint8_t));
@@ -212,6 +263,8 @@ void XORMsg::encode(int ports, Packet *p) {
        uint8_t rng = rd() & 0xff; // this is 32 bits, so we could be smart or lazy
        memcpy(&newC+i, &rng, sizeof(uint8_t));
     }
+    */
+    printf("b\n");
 
 
     printf("a\n");
@@ -243,6 +296,7 @@ void XORMsg::encode(int ports, Packet *p) {
             memcpy(xorpkt_arr[i], xorpkt_arr[0], sizeof(XORProto));
         }
 
+	xorpkt_arr[i]->Order = shuffle[i];
 	xorpkt_arr[i]->Pktid = i;
 
         printf("sent. flow: %lu, pkt: %u, len: %lu\n", xorpkt_arr[0]->Flowid, i, longest);
@@ -375,7 +429,7 @@ void XORMsg::decode(int ports, Packet *p) {
     long unsigned flow = xorpkt->Flowid;
     long unsigned pktid = xorpkt->Pktid;
 
-    printf("recv'd. flow: %lu, pkt: %lu, len: %lu\n", flow, pktid, encode_length);
+    printf("recv'd. flow: %lu, pkt: %lu, len: %lu, order: %u\n", flow, pktid, encode_length, xorpkt->Order);
 
     // allocate memory for the xor data to store in vector.
     unsigned char* dtemp;
@@ -541,9 +595,24 @@ void XORMsg::decode(int ports, Packet *p) {
     //std::cout << IPAddress(xb->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(xb->ip_dst.s_addr).s().c_str() << "\n";
     //std::cout << IPAddress(xc->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(xc->ip_dst.s_addr).s().c_str() << "\n";
 
-    output(0).push(a);
+    std::vector<std::tuple<uint8_t, Packet*>> send_vec;
+    send_vec.push_back(std::make_tuple(pkt_vec[0]->Order,a));
+    send_vec.push_back(std::make_tuple(pkt_vec[1]->Order,b));
+    send_vec.push_back(std::make_tuple(pkt_vec[2]->Order,c));
+
+    std::sort( send_vec.begin( ), send_vec.end( ), [ ]( const std::tuple<uint8_t, Packet*> lhs, const std::tuple<uint8_t, Packet*> rhs ) {
+        return std::get<0>(lhs) > std::get<0>(rhs);
+    });
+
+    output(0).push(std::get<1>(send_vec[0]));
+    output(0).push(std::get<1>(send_vec[1]));
+    output(0).push(std::get<1>(send_vec[2]));
+
+    /*
+    output(0).push(a); // largest
     output(1).push(b);
-    output(2).push(c);
+    output(2).push(c); // smallest
+    */
 
     recv_mut.unlock();
 }
