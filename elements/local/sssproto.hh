@@ -2,7 +2,7 @@
 #define SSSPROTO_HH
 
 // at another point lets do this dynamic and handle jumbos
-#define SSSPROTO_DATA_LEN 5000 // max length
+#define SSSPROTO_DATA_LEN 8000 // max length
 
 /*
  * SSSProto will encapsulate an IP packet 
@@ -13,11 +13,9 @@
 
 #define DEFAULT_MAC_LEN 14
 
-#define SSSMAGIC 0x0a1b
-
 struct SSSProto {
 #if CLICK_BYTE_ORDER == CLICK_BIG_ENDIAN
-        unsigned char Magic: 8; // for classifier
+        //unsigned char Magic: 8; // for classifier
 	unsigned int Len : 13; // packet length
 	unsigned long Sharehost : 32; // packet is from (ipv4)
 	unsigned long Flowid : 32;
@@ -29,7 +27,7 @@ struct SSSProto {
 	unsigned long Flowid : 32;
 	unsigned long Sharehost : 32;
 	unsigned int Len : 13;
-	unsigned char Magic: 8;
+	//unsigned char Magic: 8;
 #else
 #error "Undefined Byte Order!"
 #endif
