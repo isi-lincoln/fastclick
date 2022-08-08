@@ -1,3 +1,10 @@
+#ifdef DEBUG
+#define DEBUG_PRINT(fmt, args...)    fprintf(stdout, fmt, ## args)
+#else
+#define DEBUG_PRINT(fmt, args...)
+#endif
+
+
 // click files
 #include <click/config.h>
 #include <click/args.hh> // Args, for configure
@@ -139,10 +146,12 @@ void icmp_check(WritablePacket *p, uint16_t hdr_len){
     //click_icmp *icmph = p->icmp_header(); // this requires a annotation
     click_ip *ip = reinterpret_cast<click_ip *>(p->data()+hdr_len);
     click_icmp *icmph = reinterpret_cast<click_icmp *>(ip + 1);
-    std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
+    //std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
     icmph->icmp_cksum = 0;
-    icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, p->length() - (hdr_len+sizeof(click_ip)));
-    std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
+    //icmp->icmp_cksum = click_in_cksum((const unsigned char *)icmp, q->length() - sizeof(click_ip));
+    //icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, p->length() - (hdr_len+sizeof(click_ip)));
+    icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, p->length() - sizeof(click_ip));
+    //std::cout << "icmp check: " << icmph->icmp_cksum << "\n";
 }
 
 // update IP packet checksum
@@ -257,8 +266,9 @@ void SSSMsg::encrypt(int ports, Packet *p) {
         return;
     }
 
+    unsigned long total_length = p->length();
 
-    printf("in encrypt\n");
+   DEBUG_PRINT("in encrypt: %lu\n", total_length);
 
     // taking as input a Packet
     // this packet has an ethernet header which we want to keep for decrypt
@@ -272,7 +282,6 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     // TODO: data assumptions on lengths
     unsigned long iplen = iph->ip_hl << 2;
-    unsigned long total_length = p->length();
     unsigned long header_length = DEFAULT_MAC_LEN + iplen;
     unsigned long data_length = total_length - header_length;
 
@@ -288,11 +297,16 @@ void SSSMsg::encrypt(int ports, Packet *p) {
     // getting packet data as hex string.
     // https://github.com/kohler/click/blob/593d10826cf5f945a78307d095ffb0897de515de/elements/standard/print.cc#L151
     // we are not going to encoded on the data portion of the packet
-    std::string str_pkt_data = BytesToHex(p->data()+header_length, data_length);
-    //printf("pkt as hex: %s\n", str_pkt_data.c_str());
 
+    /*
+    std::string str_pkt_data = BytesToHex(p->data()+header_length, data_length);
     // do the hard work to convert data to encoded forms
-    std::vector<std::string> encoded = SSSMsg::SplitData(_threshold, _shares, str_pkt_data);
+    //std::vector<std::string> encoded = SSSMsg::SplitData(_threshold, _shares, str_pkt_data);
+    */
+
+    // * TODO: Why am I moving things from bytes to hex string?  Why cant algo operate on bytes directly?
+    std::string str_data (reinterpret_cast<const char *>(p->data()+header_length), data_length);
+    std::vector<std::string> encoded = SSSMsg::SplitData(_threshold, _shares, str_data);
 
     /* TODO: Development Code to Verify Correctness */
     // re create a backup with the minimum number of shares to meet threshold from original
@@ -307,6 +321,9 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
     SSSProto *ssspkt_arr[_shares];
 
+
+    unsigned long new_pkt_size = 0;
+
     // now lets create the shares
     for (int i = 0; i < _shares; ++i) {
         ssspkt_arr[i] = new SSSProto;
@@ -318,12 +335,13 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 	ssspkt_arr[i]->Magic = SSSMAGIC;
         memset(ssspkt_arr[i]->Data, 0, SSSPROTO_DATA_LEN);
 
-        //std::cout << "data length: " << data_length << " encode length: " << encoded[i].size() << "\n";
+        std::cout << "data length: " << data_length << " encode length: " << encoded[i].size() << "\n";
 
         memcpy(ssspkt_arr[i]->Data, &encoded[i][0], encoded[i].size());
 
         // create our new packet
-        WritablePacket *pkt = Packet::make(ssspkt_arr[i], sizeof(SSSProto)+header_length);
+        //WritablePacket *pkt = Packet::make(ssspkt_arr[i], sizeof(SSSProto)+header_length);
+        WritablePacket *pkt = Packet::make(ssspkt_arr[i], sizeof(SSSProto));
         // we done screwed up.
 	if (!pkt) return;
 
@@ -340,15 +358,20 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 	memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
 
 
-        // update checksum for the next host in the path
-        //ip_check(pkt);
+        // update the ip header checksum for the next host in the path
+        ip_check(pkt);
 
         // remove extra unused data at end of packet
         pkt->take(SSSPROTO_DATA_LEN-encoded[i].size());
 
+	new_pkt_size = pkt->length();
+
         // send packet out the given port
         output(i).push(new_pkt);
     }
+
+   DEBUG_PRINT("sss packet size: %lu\n", new_pkt_size);
+   p->kill();
 }
 
 
@@ -362,7 +385,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 */
 void SSSMsg::decrypt(int ports, Packet *p) {
 
-    printf("in decrypt\n");
+   DEBUG_PRINT("in decrypt\n");
     // packet is too large
     if (p->length() > SSSPROTO_DATA_LEN) {
         fprintf(stderr, "packet length too large for secret splitting\n");
@@ -429,7 +452,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
         auto comp_it = comp_map.find(flow);
         // packet has already been completed, dont do anything with this one
         if (comp_it != comp_map.end()){
-                printf("finished sending coded packet. dropping this one\n");
+               DEBUG_PRINT("finished sending coded packet. dropping this one\n");
     		completed[host][flow]++;
 		// we've already sent the file, and recieved all the messages, so delete from completed
 		if (completed[host][flow] == _shares-_threshold){
@@ -441,7 +464,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     }
 
     if (t == storage.end()) {
-        printf("[nh] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
+       DEBUG_PRINT("[nh] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
         storage[host][flow].push_back(data);
         cache_mut.unlock();
         return;
@@ -453,7 +476,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // map exists but there is no flowid, so add it
     if (flowid == host_map.end()) {
-        printf("[nf] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
+       DEBUG_PRINT("[nf] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
         storage[host][flow].push_back(data);
         cache_mut.unlock();
         return;
@@ -465,13 +488,13 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // including this packet, we still do not have enough to compute
     //
     if (storage[host][flow].size()+1 < _threshold) {
-        printf("[under] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
+       DEBUG_PRINT("[under] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
         storage[host][flow].push_back(data);
         cache_mut.unlock();
         return;
     }
 
-    printf("have enough packets to reconstruct\n");
+   DEBUG_PRINT("have enough packets to reconstruct\n");
 
     // we have enough to compute, create vector of the data
     std::vector<std::string> encoded;
@@ -483,6 +506,8 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // get back the secret
     std::string pkt_data = SSSMsg::RecoverData(_threshold, encoded);
 
+
+    /*
     // convert from hex back to bytes
     unsigned char data_pkt[encode_length/2]; 
     const char *hex = pkt_data.c_str();
@@ -492,17 +517,21 @@ void SSSMsg::decrypt(int ports, Packet *p) {
 
     // encode length is hex, hex is 2x larger than bytes form size
     WritablePacket *pkt = Packet::make((void*)data_pkt, (encode_length/2)+header_length);
+    */
+    WritablePacket *pkt = Packet::make(pkt_data.c_str(), encode_length+header_length);
 
     /* TODO this works, find out why when i dont push the header and take away that it doesnt. */
     WritablePacket *new_pkt = pkt->push_mac_header(header_length);
     memcpy((void*)new_pkt->data(), p->data(), header_length);
 
+    std::cout << "header length: " << header_length << "\n";
 
     /* Checksums - the devil is in the details */
     // we know its IP because we enforce that in the config, but now we need to handle the checksums
     // for the protocols above us
     //
     //uint16_t ip_proto = htons(iph->ip_p);
+
     /*
     uint8_t ip_proto = (uint8_t)iph->ip_p;
     std::cout << "hdr: " << iph->ip_hl << " protocol: " << ip_proto << " offset: " << iph->ip_off <<"\n";
@@ -520,11 +549,13 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     }
     */
 
+    /*
     uint16_t oldchk = iph->ip_sum;
     std::cout << IPAddress(iph->ip_src.s_addr).s().c_str()  << " -> " << IPAddress(iph->ip_dst.s_addr).s().c_str() << "\n";
-    //ip_check(pkt);
+    ip_check(pkt);
     uint16_t newchk = iph->ip_sum;
     std::cout << "chcksum: " << oldchk << " vs " << newchk << "\n";
+    */
 
     // ship it
     output(0).push(pkt);
@@ -534,12 +565,17 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     completed[host][flow] = 1;
     cache_mut.unlock();
 
+    p->kill();
 }
 
 // TODO
 void SSSMsg::forward(int ports, Packet *p) {
     // check the sssmsg header and forward out all other interfaces
     // todo on specifying which interfaces
+    //
+    // Debugging
+    //const click_ether *mch = (click_ether *) p->data();
+    //std::cout << "forwarding packet: " << EtherAddress(mch->ether_shost).unparse().c_str() << " -> " << EtherAddress(mch->ether_dhost).unparse().c_str() << "\n";
     output(0).push(p);
 }
 
@@ -564,8 +600,6 @@ void SSSMsg::push(int ports, Packet *p) {
     if (p->length() > 8000) {
         // too large
     }
-
-    printf("in push\n");
 
     if (_function == 0) {
         encrypt(ports, p);
