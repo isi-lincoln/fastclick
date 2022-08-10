@@ -1,3 +1,5 @@
+/*
+
 #ifndef CLICK_SSSCLASSIFIER__HH
 #define CLICK_SSSCLASSIFIER__HH
 
@@ -5,7 +7,7 @@
 
 CLICK_DECLS
 
-/*
+/\*
 =c
 
 SSSClassifier()
@@ -17,7 +19,7 @@ Classify according to the type of an sss packet, using MAGIC set in header.
 =d
 
 SSSProto packets go out first output port, everything else goes out second.
-*/
+*\/
 class SSSClassifier : public Element {
 
 	public:
@@ -34,3 +36,5 @@ class SSSClassifier : public Element {
 CLICK_ENDDECLS
 
 #endif
+
+*/
