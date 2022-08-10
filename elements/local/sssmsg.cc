@@ -1,4 +1,4 @@
-#define DEBUG 1
+//#define DEBUG 1
 #ifdef DEBUG
 #define DEBUG_PRINT(fmt, args...)    fprintf(stdout, fmt, ## args)
 #else
@@ -272,6 +272,12 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 	Packet *ip_pkt = pkt->push(sizeof(click_ip));
 	memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
 
+	// update ip packet size = ip header + sss header + sss data
+	// TODO/NOTE: these lines in overwritting the ip header are only needed when using Linux Forwarding.
+        click_ip *iph2 = (click_ip *) ip_pkt->data();
+	iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(SSSProto)-(SSSPROTO_DATA_LEN-encoded[i].size())) );
+	// END NOTE
+
 	// This sets/annotates the network header as well as pushes into packet
 	Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
 	memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
@@ -434,6 +440,12 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     // ip header first
     Packet *ip_pkt = pkt->push(sizeof(click_ip));
     memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
+
+
+    // TODO/NOTE: these lines in overwritting the ip header are only needed when using Linux Forwarding.
+    click_ip *iph2 = (click_ip *) ip_pkt->data();
+    iph2->ip_len = ntohs( sizeof(click_ip) +  pkt_data.length());
+    // END NODE
 
     // mac header next (so its first in the packet)
     Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
