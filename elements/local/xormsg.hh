@@ -24,27 +24,24 @@ The input packet data must be a valid IPv4 packet.
 */
 class XORMsg : public Element {
 	uint8_t _ifaces; // number of links out
-	uint8_t _shares; // number of encoded packets to create/send
 
 	// 0: encode, 1: decode
 	uint8_t _function;
 
-	// when we initialize for security we should pick randomly and
-	// then we need to do overflow checking on 32bit
-	uint32_t _flowid;
+    // unique identifiers for the xor'd packets
+	uint64_t _sym_a;
+	uint64_t _sym_b;
 
-	/* will use this to store packets for decryption */
-	// < host >: <id, pkt>
 
 	public:
 		XORMsg();
 		~XORMsg();
 		// key1: ipv4 destination, value packet
-    		std::unordered_map<uint32_t, std::vector<std::string> > pkt_send; 
+		std::unordered_map<uint32_t, std::vector<std::string> > pkt_send; 
 		// key1: ipv4 destination, key2: flow id, value: packet
-    		std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<unsigned char*> > > pkt_recv; 
-        	std::mutex send_mut; // mutex for critical section
-        	std::mutex recv_mut; // mutex for critical section
+		std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<unsigned char*> > > pkt_recv; 
+		std::mutex send_mut; // mutex for critical section
+		std::mutex recv_mut; // mutex for critical section
 
 		const char *class_name() const { return "XORMsg"; }
 		const char *port_count() const { return "1-/1-"; } // depending on directionality, 1/3+ or 3+/1
