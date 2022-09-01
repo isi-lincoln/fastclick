@@ -27,6 +27,7 @@
 
 #include <iostream>
 #include <cstdlib>
+#include <cstdint> // ULLONG_MAX
 #include <sstream> // istream
 #include <emmintrin.h> // _mm_loadu_si128
 
@@ -76,71 +77,192 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     return 0;
 }
 
+std::random_device r;
+std::seed_seq seed{ r(), r(), r(), r(), r(), r(), r(), r() };
+std::mt19937 eng(seed);
 
-XORProto* sub_encode(Packet* a, Packet *b) {
-    unsigned long a_len = a->length();
-    unsigned long b_len = b->length();
-    unsigned long padding;
-    unsigned long longest;
-    unsigned long smallest;
-    if (a_len > b_len) {
-        padding = a_len-b_len;
-        longest = a_len;
-        smallest = b_len;
-    } else {
-        padding = b_len-a_len;
-        longest = b_len;
-        smallest = a_len;
-    }
+unsigned long long get_64_rand() {
+    std::uniform_int_distribution< unsigned long long > uid(0, ULLONG_MAX);
+    return uid(eng);
+}
 
-    XORProto xorpkt = new XORProto;
-    xorpkt->SymbolA = rand();
-    xorpkt->SymbolB = rand();
-    xorpkt->Version = 0;
-    xorpkt->Len = longest;
-    memset(xorpkt->Data, 0, XORPROTO_DATA_LEN)
-
-    // for sse/ssse 128 bit vectors maybe ifdef here for avx
-    uint64_t chunks = smallest >> 4ULL;
-
-    for (int i = 0; i < chunks ; ++i){
-        // load our packets into vectors
-        __m128i x = _mm_loadu_si128 (((__m128i *)a->data()) + i);
-        __m128i y = _mm_loadu_si128 (((__m128i *)b->data()) + i);
-        // xor and our vector back into our xor data buffer
-        _mm_storeu_si128 (((__m128i *)xorpkt->Data) + i, _mm_xor_si128 (x, y));
-    }
-
-    // now the left over chunks (padding+vector alignment) we do by hand
-    for (unsigned long j = chunks << 4ULL; j < smallest; ++j) {
-        // check 1, vector alignment, if lets say our packet is 162 bits.
-        // we get 1 full vector (128) and 34 left over bits.
-        // we need to then take them as bytes (4 bytes) and 2 left over bits
-        // I believe that click aligns on bytes, if not, we got a problem
-        xorpkt->Data[j] = a->data()+j ^ b->data()+j;
-    }
-        
-
-    for (unsigned long j = 0; j < padding; ++j) {
-        // check 2, we are beyond smallest, into padding territory, so we need
-        // being adding noise to xor to match the longest packet
-        
-        // TODO: noise/rand - but we want to know this noise, for the other packet we
-        // send so we can cancel it out with the garbo
-        xorpkt->Data[j] = a_len > b_len ? (a->data()+j+smallest)^j : (b->data()+j+smallest)^j;
-    }
+uint8_t get_8_rand() {
+    std::uniform_int_distribution< uint8_t > uid(0, UCHAR_MAX);
+    return uid(eng);
+}
 
 
+class PacketData{
+	public:
+		std::string data;
+		unsigned long long id; // unique identifier
+		// constructors
+		PacketData() {}
+    	PacketData(std::string d, std::string i) : data(d), id(i) {}
+};
+
+void populate_packet(void* buffer, unsigned long long length) {
+    int fd = open("/dev/urandom", O_RDONLY);
+    assert(fd > 0); 
+    read(fd, rand_buffer, length);
+	return
 }
 
 /*
- * Take x (2 for now) packets, and xor them together.
- * Then generate a noise packet for the destination's kernel
- * to toss that we can use to xor again to create 2 xor'd
- * paths.
- *
- * -> A  -- path1 --> A^B
- * -> B  -- path2 --> B^G (where G is noise)
+ */
+std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
+	// validate we are trying to encode at least 2 packets
+	if (pd.size() < 2) {
+		fprintf(stderr, "number of packets to encode must be greater than 1.\n");
+		return;
+	}
+
+	// packet attributes
+    unsigned long longest;
+
+	std::vector<unsigned long> lengths;
+	for (auto i : pd) {
+		lengths.push_back(i->length());
+	}
+
+	// find smallest and longest sized packets, excluding 0 length if given
+	unsigned long longest = std::max_element(lengths.begin(), lengths.end());
+
+	// we want minimum 3 packets
+	if (pd.size() == 2) {
+		// some non-zero probability of collision 2**48
+		// TODO: check with current ids to make that probability 0
+		unsigned long long new_rand = get_64_rand() & 0xffffffffffff;
+		PacketData x = new PacketData("", new_rand);
+		pd.push_back(x);
+	}
+
+	// rand_length just adds some data to the end of the packets to distort
+	// distribution sizes.  Since the original packet will include the actual
+	// packet length, the padded data will be removed by kernel (or decode).
+    unsigned long rand_length;
+
+	// here for performance we just want to make sure that our random length
+	// wont go over 1500 bytes which on most networks is the MTU and prevent
+	// packet fragmentation
+
+	unsigned long normal_mtu = 1500*8 - XORPKT_HEADER_LEN*8;
+	unsigned long jumbo_mtu = 7800*8 - XORPKT_HEADER_LEN*8;
+    if (long(normal_mtu) - long(longest) > 0) {
+		std::uniform_int_distribution< unsigned long> uid(longest, normal_mtu);
+		rand_length = unsigned long(uid(eng));
+
+		// fudge the numbers to fit in vectors nicely
+		unsigned int x = rand_length % 128;
+		if (x != 0) {
+			unsigned int added = 128 - x;
+			if (rand_length+added > normal_mtu){
+				if (rand_length-x < longest) {
+					rand_length = rand_length + added; // penalty for mtu breach
+				} else {
+					rand_length = rand_length -x;
+				}
+			} else {
+				rand_length = rand_length + added;
+			}
+		}
+    } else if (longest == normal_mtu) {
+        rand_length = longest;
+    } else if (long(jumbo_mtu) - long(longest) > 0) { // leave space for xorpacket header
+		std::uniform_int_distribution< unsigned long> uid(longest, jumbo_mtu);
+		rand_length = unsigned long(uid(eng));
+
+		// fudge the numbers to fit in vectors nicely
+		unsigned int x = rand_length % 128;
+		if (x != 0) {
+			unsigned int added = 128 - x;
+			if (rand_length+added > jumbo_mtu){
+				if (rand_length-x < longest) {
+					rand_length = rand_length + added; // penalty for mtu breach
+				} else {
+					rand_length = rand_length -x;
+				}
+			} else {
+				rand_length = rand_length + added;
+			}
+		}
+    } else {
+        rand_length = longest;
+    }
+
+
+
+	for ( auto i : pd ) {
+		unsigned long str_len = i->data->length();
+		long padding = rand_length - str_len;
+		if (padding <= 0) {
+			assert(padding >= 0); // should never be negative
+			continue; // same length as random length already
+		}
+		// we need to append data to our packet
+		void* buf = malloc(buffer, padding);
+		populate_packet(buf, padding);
+		i->data.append(buf);
+		free(buf);
+	}
+
+	// TODO: for > 3 we may need to do some linear algerbra
+	std::vector<XORProto*> xordata;
+	unsigned int counter = 0;
+	for ( auto i: pd ){
+		XORProto xorpkt_ = new XORProto;
+		xorpkt_->Version = 0;
+		xorpkt_->Len = rand_length;
+		memset(xorpkt_->Data, 0, rand_length)
+
+		// a^b^c
+		assert(rand_length % 128==0);
+    	uint64_t chunks = rand_length >> 4ULL;
+		if (counter==0) {
+			xorpkt_->SymbolA = pd[0]->id;
+			xorpkt_->SymbolB = pd[1]->id;
+			xorpkt_->SymbolC = pd[2]->id;
+			for (int i = 0; i < chunks ; ++i){
+				// load our packets into vectors
+				__m128i x = _mm_loadu_si128 (((__m128i *)pd[0]->data) + i);
+				__m128i y = _mm_loadu_si128 (((__m128i *)pd[1]->data()) + i);
+				__m128i z = _mm_loadu_si128 (((__m128i *)pd[2]->data()) + i);
+				// xor and our vector back into our xor data buffer
+				_mm_storeu_si128 (((__m128i *)xorpkt->Data) + i, _mm_xor_si128 (_mm_xor_si128 (x, y), z));
+			}
+		// a^b
+		} else if (counter==1) {
+			xorpkt_->SymbolA = pd[0]->id;
+			xorpkt_->SymbolB = pd[1]->id;
+			xorpkt_->SymbolC = 0;
+			for (int i = 0; i < chunks ; ++i){
+				// load our packets into vectors
+				__m128i x = _mm_loadu_si128 (((__m128i *)pd[0]->data) + i);
+				__m128i y = _mm_loadu_si128 (((__m128i *)pd[1]->data()) + i);
+				// xor and our vector back into our xor data buffer
+				_mm_storeu_si128 (((__m128i *)xorpkt->Data) + i, _mm_xor_si128 (x, y));
+			}
+		// b^c
+		} else {
+			xorpkt_->SymbolA = 0;
+			xorpkt_->SymbolB = pd[1]->id;
+			xorpkt_->SymbolC = pd[2]->id;
+			for (int i = 0; i < chunks ; ++i){
+				// load our packets into vectors
+				__m128i y = _mm_loadu_si128 (((__m128i *)pd[1]->data()) + i);
+				__m128i z = _mm_loadu_si128 (((__m128i *)pd[2]->data()) + i);
+				// xor and our vector back into our xor data buffer
+				_mm_storeu_si128 (((__m128i *)xorpkt->Data) + i, _mm_xor_si128 (y, z));
+			}
+		}
+		
+		counter++;
+	}
+
+	return xordata;
+}
+
+/*
 */
 
 void XORMsg::encode(int ports, Packet *p) {
@@ -195,51 +317,70 @@ void XORMsg::encode(int ports, Packet *p) {
     int version = 0;
     int flowid = _flowid++; // see notes on randomizing this for fun
 
-    std::string str_data (reinterpret_cast<const char *>(p->data()+header_length), data_length);
-    std::vector<std::string> encoded = XORMsg::SplitData(_threshold, _shares, str_data);
+    //std::string str_data (reinterpret_cast<const char *>(p->data()), total_length);
+    std::string data(p->data(), p->length());
+	PacketData x = new PacketData(data, get_64_rand()&0xffffffffffff);
+
+    // critical region, lock.
+    recv_mut.lock();
+
+    // we have 1 packet, we want to see if we have another packet in the queue
+    // if we do, great we can xor
+    // if not, we need to wait for another packet
+
+    // check if this packet destination is already in our storage queue
+    auto t = storage.find(src_host);
+	std::vector<PacketData*> pd;
+
+    // queue does not have any elements for that host
+    if (t == storage.end()) {
+        storage[host].push_back(x);
+        cache_mut.unlock();
+        return;
+    } else {
+        auto host_map = storage.at(host);
+        // queue is empty, so add this packet and wait for another to come along
+        if (host_map.size() < 2) {
+            storage[host].push_back(data);
+            cache_mut.unlock();
+            return;
+        }
+
+		for (auto i : host_map ) {
+			pd.push_back(i);
+			storage[host].erase(i);
+		}
+
+    }
+	
+	std::vector<PacketData*> pkts = sub_encode(pd);
 
     //DEBUG_PRINT("Data In: %s -- %s\n",str_data.c_str(), str_data);
     //DEBUG_PRINT("Data In: %lu -- %lu -- %lu\n", strlen(str_data.c_str()), data_length, encoded[0].size());
-
-    XORProto *xorpkt_arr[_shares];
 
 
     unsigned long new_pkt_size = 0;
 
     // now lets create the shares
-    for (int i = 0; i < _shares; ++i) {
-        xorpkt_arr[i] = new XORProto;
-	// diff between data and encode is the xor
-        xorpkt_arr[i]->Len = encoded[i].size();
-        xorpkt_arr[i]->Sharehost = src_host;
-        xorpkt_arr[i]->Version = version;
-        xorpkt_arr[i]->Flowid = flowid;
-        xorpkt_arr[i]->Shareid = i;
-	//xorpkt_arr[i]->Magic = XORMAGIC;
-	
-	// write the XOR encoded data
-        memcpy(xorpkt_arr[i]->Data, &encoded[i][0], encoded[i].size());
-
-        // create our new packet, size is the header (XORProto), minus max data size - actual data size (gives us actual data size)
-	// so our new packet should just be XORProto+XORData size
+    for (auto i: pkts) {
         WritablePacket *pkt = Packet::make(xorpkt_arr[i], (sizeof(XORProto)-(XORPROTO_DATA_LEN-encoded[i].size())));
 
         // we done screwed up.
-	if (!pkt) return;
+		if (!pkt) return;
 
-        // add space at the front to put back on the old ip and mac headers
-	Packet *ip_pkt = pkt->push(sizeof(click_ip));
-	memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
+			// add space at the front to put back on the old ip and mac headers
+		Packet *ip_pkt = pkt->push(sizeof(click_ip));
+		memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
 
-	// update ip packet size = ip header + xor header + xor data
-	// TODO/NOTE: these lines in overwritting the ip header are only needed when using Linux Forwarding.
-        click_ip *iph2 = (click_ip *) ip_pkt->data();
-	iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-encoded[i].size())) );
-	// END NOTE
+		// update ip packet size = ip header + xor header + xor data
+		// TODO/NOTE: these lines in overwritting the ip header are only needed when using Linux Forwarding.
+			click_ip *iph2 = (click_ip *) ip_pkt->data();
+		iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-encoded[i].size())) );
+		// END NOTE
 
-	// This sets/annotates the network header as well as pushes into packet
-	Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
-	memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
+		// This sets/annotates the network header as well as pushes into packet
+		Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
+		memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
 
 
         // update the ip header checksum for the next host in the path

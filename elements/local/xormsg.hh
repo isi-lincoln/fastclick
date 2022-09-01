@@ -36,10 +36,9 @@ class XORMsg : public Element {
 	public:
 		XORMsg();
 		~XORMsg();
-		// key1: ipv4 destination, value packet
-		std::unordered_map<uint32_t, std::vector<std::string> > pkt_send; 
-		// key1: ipv4 destination, key2: flow id, value: packet
-		std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<unsigned char*> > > pkt_recv; 
+
+		std::unordered_map<uint32_t, std::vector<std::string> > storage; 
+
 		std::mutex send_mut; // mutex for critical section
 		std::mutex recv_mut; // mutex for critical section
 

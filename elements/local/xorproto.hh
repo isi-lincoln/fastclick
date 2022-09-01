@@ -14,20 +14,28 @@
 
 #define DEFAULT_MAC_LEN 14
 
+// our header is 128+16 bits = 18 bytes
+// then 14 for mac
+// and 20 for ip
+// 34+18 = 52 byte total used by our header
+#define XORPKT_HEADER_LEN 52
+
 // To avoid polution attack, these need to be signed to ensure attacker
 // cant DOS the data by providing known symbols to destination to prevent
 // code from being decoded.
 struct XORProto {
 #if CLICK_BYTE_ORDER == CLICK_BIG_ENDIAN
+	unsigned int Version : 3; // xor version
 	unsigned int Len : 13; // packet length log_2(8000)
 	unsigned long long SymbolA: 48; // unique packet identifer for A
 	unsigned long long SymbolB: 48;  // unique packet identifer for B
-	unsigned int Version : 3; // sss version
+	unsigned long long SymbolC: 48;  // unique packet identifer for C
 #elif CLICK_BYTE_ORDER == CLICK_LITTLE_ENDIAN
-	unsigned int Version : 3; // sss version
+	unsigned long long SymbolC: 48;  // unique packet identifer for B
 	unsigned long long SymbolB: 48;  // unique packet identifer for B
 	unsigned long long SymbolA: 48; // unique packet identifer for A
 	unsigned int Len : 13; // packet length log_2(8000)
+	unsigned int Version : 3; // xor version
 #else
 #error "Undefined Byte Order!"
 #endif
