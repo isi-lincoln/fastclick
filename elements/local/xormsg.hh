@@ -28,6 +28,9 @@ class XORMsg : public Element {
 	// 0: encode, 1: decode
 	uint8_t _function;
 
+    // symbols to use (assume 2)
+    uint8_t _symbols;
+
     // unique identifiers for the xor'd packets
 	uint64_t _sym_a;
 	uint64_t _sym_b;
@@ -37,7 +40,8 @@ class XORMsg : public Element {
 		XORMsg();
 		~XORMsg();
 
-		std::unordered_map<uint32_t, std::vector<std::string> > storage; 
+		std::unordered_map<uint32_t, std::vector<std::string> > send_storage; 
+        std::unordered_map<uint64_t, std::vector<std::pair<uint8_t, std::string> > > recv_storage;
 
 		std::mutex send_mut; // mutex for critical section
 		std::mutex recv_mut; // mutex for critical section
@@ -56,6 +60,17 @@ class XORMsg : public Element {
 		// make these public functions to inherit members
 		void encode(int port, Packet *p);
 		void decode(int port, Packet *p);
+		void forward(int port, Packet *p);
+};
+
+class PacketData{
+	public:
+		std::string data;
+		unsigned long long id; // unique identifier
+		// constructors
+		PacketData() {}
+    	PacketData(std::string d, unsigned long long i) : data(d), id(i) {}
+		~PacketData();
 };
 
 CLICK_ENDDECLS

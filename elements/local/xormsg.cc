@@ -30,6 +30,11 @@
 #include <cstdint> // ULLONG_MAX
 #include <sstream> // istream
 #include <emmintrin.h> // _mm_loadu_si128
+#include <utility>      // std::pair, std::make_pair
+#include <string> // string
+#include <random> // random_device
+#include <fcntl.h> // RDONLY
+#include <algorithm> // max_element
 
 CLICK_DECLS
 
@@ -46,8 +51,7 @@ void ip_check(WritablePacket *p) {
 
 // allow the user to configure the shares and threshold amounts
 int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
-    uint8_t shares;
-    uint8_t threshold;
+    uint8_t symbols;
     uint8_t function;
     if (Args(conf, this, errh)
         .read_mp("symbols", symbols) // positional
@@ -91,49 +95,34 @@ uint8_t get_8_rand() {
     return uid(eng);
 }
 
-
-class PacketData{
-	public:
-		std::string data;
-		unsigned long long id; // unique identifier
-		// constructors
-		PacketData() {}
-    	PacketData(std::string d, std::string i) : data(d), id(i) {}
-};
-
 void populate_packet(void* buffer, unsigned long long length) {
     int fd = open("/dev/urandom", O_RDONLY);
     assert(fd > 0); 
-    read(fd, rand_buffer, length);
-	return
+    read(fd, buffer, length);
+	return;
 }
 
-/*
- */
 std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
 	// validate we are trying to encode at least 2 packets
 	if (pd.size() < 2) {
 		fprintf(stderr, "number of packets to encode must be greater than 1.\n");
-		return;
+		return {};
 	}
-
-	// packet attributes
-    unsigned long longest;
 
 	std::vector<unsigned long> lengths;
 	for (auto i : pd) {
-		lengths.push_back(i->length());
+		lengths.push_back(i->data.length());
 	}
 
 	// find smallest and longest sized packets, excluding 0 length if given
-	unsigned long longest = std::max_element(lengths.begin(), lengths.end());
+	unsigned long longest = *std::max_element(lengths.begin(), lengths.end());
 
 	// we want minimum 3 packets
 	if (pd.size() == 2) {
 		// some non-zero probability of collision 2**48
 		// TODO: check with current ids to make that probability 0
 		unsigned long long new_rand = get_64_rand() & 0xffffffffffff;
-		PacketData x = new PacketData("", new_rand);
+		PacketData* x = new PacketData("", new_rand);
 		pd.push_back(x);
 	}
 
@@ -150,7 +139,7 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
 	unsigned long jumbo_mtu = 7800*8 - XORPKT_HEADER_LEN*8;
     if (long(normal_mtu) - long(longest) > 0) {
 		std::uniform_int_distribution< unsigned long> uid(longest, normal_mtu);
-		rand_length = unsigned long(uid(eng));
+		rand_length = (unsigned long)(uid(eng));
 
 		// fudge the numbers to fit in vectors nicely
 		unsigned int x = rand_length % 128;
@@ -170,7 +159,7 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
         rand_length = longest;
     } else if (long(jumbo_mtu) - long(longest) > 0) { // leave space for xorpacket header
 		std::uniform_int_distribution< unsigned long> uid(longest, jumbo_mtu);
-		rand_length = unsigned long(uid(eng));
+		rand_length = (unsigned long)(uid(eng));
 
 		// fudge the numbers to fit in vectors nicely
 		unsigned int x = rand_length % 128;
@@ -193,16 +182,16 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
 
 
 	for ( auto i : pd ) {
-		unsigned long str_len = i->data->length();
+		unsigned long str_len = i->data.length();
 		long padding = rand_length - str_len;
 		if (padding <= 0) {
 			assert(padding >= 0); // should never be negative
 			continue; // same length as random length already
 		}
 		// we need to append data to our packet
-		void* buf = malloc(buffer, padding);
+		char* buf = (char*) malloc(padding);
 		populate_packet(buf, padding);
-		i->data.append(buf);
+		i->data.append((char*)buf);
 		free(buf);
 	}
 
@@ -210,47 +199,48 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
 	std::vector<XORProto*> xordata;
 	unsigned int counter = 0;
 	for ( auto i: pd ){
-		XORProto xorpkt_ = new XORProto;
-		xorpkt_->Version = 0;
-		xorpkt_->Len = rand_length;
-		memset(xorpkt_->Data, 0, rand_length)
+		XORProto *xorpkt = new XORProto;
+		xorpkt->Version = 0;
+		xorpkt->Len = rand_length;
+		memset(xorpkt->Data, 0, rand_length);
 
 		// a^b^c
-		assert(rand_length % 128==0);
+		unsigned int aligned = rand_length % 128;
+		assert(aligned==0);
     	uint64_t chunks = rand_length >> 4ULL;
 		if (counter==0) {
-			xorpkt_->SymbolA = pd[0]->id;
-			xorpkt_->SymbolB = pd[1]->id;
-			xorpkt_->SymbolC = pd[2]->id;
+			xorpkt->SymbolA = pd[0]->id;
+			xorpkt->SymbolB = pd[1]->id;
+			xorpkt->SymbolC = pd[2]->id;
 			for (int i = 0; i < chunks ; ++i){
 				// load our packets into vectors
-				__m128i x = _mm_loadu_si128 (((__m128i *)pd[0]->data) + i);
-				__m128i y = _mm_loadu_si128 (((__m128i *)pd[1]->data()) + i);
-				__m128i z = _mm_loadu_si128 (((__m128i *)pd[2]->data()) + i);
+				__m128i x = _mm_loadu_si128 (((__m128i *)pd[0]->data.c_str()) + i);
+				__m128i y = _mm_loadu_si128 (((__m128i *)pd[1]->data.c_str()) + i);
+				__m128i z = _mm_loadu_si128 (((__m128i *)pd[2]->data.c_str()) + i);
 				// xor and our vector back into our xor data buffer
 				_mm_storeu_si128 (((__m128i *)xorpkt->Data) + i, _mm_xor_si128 (_mm_xor_si128 (x, y), z));
 			}
 		// a^b
 		} else if (counter==1) {
-			xorpkt_->SymbolA = pd[0]->id;
-			xorpkt_->SymbolB = pd[1]->id;
-			xorpkt_->SymbolC = 0;
+			xorpkt->SymbolA = pd[0]->id;
+			xorpkt->SymbolB = pd[1]->id;
+			xorpkt->SymbolC = 0;
 			for (int i = 0; i < chunks ; ++i){
 				// load our packets into vectors
-				__m128i x = _mm_loadu_si128 (((__m128i *)pd[0]->data) + i);
-				__m128i y = _mm_loadu_si128 (((__m128i *)pd[1]->data()) + i);
+				__m128i x = _mm_loadu_si128 (((__m128i *)pd[0]->data.c_str()) + i);
+				__m128i y = _mm_loadu_si128 (((__m128i *)pd[1]->data.c_str()) + i);
 				// xor and our vector back into our xor data buffer
 				_mm_storeu_si128 (((__m128i *)xorpkt->Data) + i, _mm_xor_si128 (x, y));
 			}
 		// b^c
 		} else {
-			xorpkt_->SymbolA = 0;
-			xorpkt_->SymbolB = pd[1]->id;
-			xorpkt_->SymbolC = pd[2]->id;
+			xorpkt->SymbolA = 0;
+			xorpkt->SymbolB = pd[1]->id;
+			xorpkt->SymbolC = pd[2]->id;
 			for (int i = 0; i < chunks ; ++i){
 				// load our packets into vectors
-				__m128i y = _mm_loadu_si128 (((__m128i *)pd[1]->data()) + i);
-				__m128i z = _mm_loadu_si128 (((__m128i *)pd[2]->data()) + i);
+				__m128i y = _mm_loadu_si128 (((__m128i *)pd[1]->data.c_str()) + i);
+				__m128i z = _mm_loadu_si128 (((__m128i *)pd[2]->data.c_str()) + i);
 				// xor and our vector back into our xor data buffer
 				_mm_storeu_si128 (((__m128i *)xorpkt->Data) + i, _mm_xor_si128 (y, z));
 			}
@@ -261,9 +251,6 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
 
 	return xordata;
 }
-
-/*
-*/
 
 void XORMsg::encode(int ports, Packet *p) {
     // packet is too large
@@ -296,9 +283,9 @@ void XORMsg::encode(int ports, Packet *p) {
     DEBUG_PRINT("in encode: %lu\n", total_length);
 
     // taking as input a Packet
-    // this packet has an ethernet header which we want to keep for decrypt
+    // this packet has an ethernet header which we want to keep for decode
     // it also has the ip header, and the data contents.
-    // we would ideally like to keep all this entact, then decrypt can fudge
+    // we would ideally like to keep all this entact, then decode can fudge
     // the headers and checksum
 
     // we want to retrieve the ip header information, mainly the ipv4 dest
@@ -313,47 +300,48 @@ void XORMsg::encode(int ports, Packet *p) {
     // source ip address is the share host (originator of data)
     // ip_src is in_addr struct
     unsigned long src_host = IPAddress(iph->ip_src.s_addr);
+    unsigned long dst_host = IPAddress(iph->ip_dst.s_addr);
     // initial version of protocol
     int version = 0;
-    int flowid = _flowid++; // see notes on randomizing this for fun
 
-    //std::string str_data (reinterpret_cast<const char *>(p->data()), total_length);
-    std::string data(p->data(), p->length());
-	PacketData x = new PacketData(data, get_64_rand()&0xffffffffffff);
+    std::string pkt_data(reinterpret_cast<const char *>(p->data()), p->length());
+    //std::string pkt_data(const_cast<unsigned char*>(p->data()), p->length());
 
     // critical region, lock.
-    recv_mut.lock();
+    send_mut.lock();
 
     // we have 1 packet, we want to see if we have another packet in the queue
     // if we do, great we can xor
     // if not, we need to wait for another packet
 
     // check if this packet destination is already in our storage queue
-    auto t = storage.find(src_host);
+    auto t = send_storage.find(dst_host);
 	std::vector<PacketData*> pd;
 
     // queue does not have any elements for that host
-    if (t == storage.end()) {
-        storage[host].push_back(x);
-        cache_mut.unlock();
+    if (t == send_storage.end()) {
+        send_storage[dst_host].push_back(pkt_data);
+        send_mut.unlock();
         return;
     } else {
-        auto host_map = storage.at(host);
+        auto host_map = send_storage.at(dst_host);
         // queue is empty, so add this packet and wait for another to come along
         if (host_map.size() < 2) {
-            storage[host].push_back(data);
-            cache_mut.unlock();
+            send_storage[dst_host].push_back(pkt_data);
+            send_mut.unlock();
             return;
         }
 
-		for (auto i : host_map ) {
-			pd.push_back(i);
-			storage[host].erase(i);
+		for (auto i = host_map.begin(); i != host_map.end(); i++ ) {
+			PacketData *x = new PacketData(*i, get_64_rand()&0xffffffffffff);
+			pd.push_back(x);
+			host_map.erase(i);
 		}
 
     }
+    send_mut.unlock();
 	
-	std::vector<PacketData*> pkts = sub_encode(pd);
+	std::vector<XORProto*> pkts = sub_encode(pd);
 
     //DEBUG_PRINT("Data In: %s -- %s\n",str_data.c_str(), str_data);
     //DEBUG_PRINT("Data In: %lu -- %lu -- %lu\n", strlen(str_data.c_str()), data_length, encoded[0].size());
@@ -361,21 +349,23 @@ void XORMsg::encode(int ports, Packet *p) {
 
     unsigned long new_pkt_size = 0;
 
+	// TODO: this assumes a 1-1 matching between packets being XORd and interfaces
+	unsigned iface_counter = 0;
     // now lets create the shares
     for (auto i: pkts) {
-        WritablePacket *pkt = Packet::make(xorpkt_arr[i], (sizeof(XORProto)-(XORPROTO_DATA_LEN-encoded[i].size())));
+        WritablePacket *pkt = Packet::make(i->Data, (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)));
 
         // we done screwed up.
 		if (!pkt) return;
 
-			// add space at the front to put back on the old ip and mac headers
+		// add space at the front to put back on the old ip and mac headers
 		Packet *ip_pkt = pkt->push(sizeof(click_ip));
 		memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
 
 		// update ip packet size = ip header + xor header + xor data
 		// TODO/NOTE: these lines in overwritting the ip header are only needed when using Linux Forwarding.
-			click_ip *iph2 = (click_ip *) ip_pkt->data();
-		iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-encoded[i].size())) );
+		click_ip *iph2 = (click_ip *) ip_pkt->data();
+		iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)) );
 		// END NOTE
 
 		// This sets/annotates the network header as well as pushes into packet
@@ -386,11 +376,13 @@ void XORMsg::encode(int ports, Packet *p) {
         // update the ip header checksum for the next host in the path
         ip_check(pkt);
 
-
-	new_pkt_size = pkt->length();
+		new_pkt_size = pkt->length();
 
         // send packet out the given port
-        output(i).push(new_pkt);
+        output(iface_counter).push(new_pkt);
+
+		free(i);
+		iface_counter++;
     }
 
    DEBUG_PRINT("original size: %lu  ~~~ xor size: %lu\n", p->length(), new_pkt_size);
@@ -398,16 +390,9 @@ void XORMsg::encode(int ports, Packet *p) {
 
 
 
-/*
- * decrypt
- *
- * takes in multiple encoded packet, decodes them, and sends a single
- * message out the interface.
- *
-*/
-void XORMsg::decrypt(int ports, Packet *p) {
+void XORMsg::decode(int ports, Packet *p) {
 
-   DEBUG_PRINT("in decrypt\n");
+   DEBUG_PRINT("in decode\n");
     // packet is too large
     if (p->length() > XORPROTO_DATA_LEN) {
         fprintf(stderr, "packet length too large for xorting\n");
@@ -427,8 +412,6 @@ void XORMsg::decrypt(int ports, Packet *p) {
         fprintf(stderr, "xor handling non-ipv4 packet: %x\n", htons(mch->ether_type));
         return;
     }
-    //std::cout << EtherAddress(mch->ether_shost).unparse().c_str() << " -> " << EtherAddress(mch->ether_dhost).unparse().c_str() << "\n";
-    //printf("%s -> %s\n", IPAddress(iph->ip_src.s_addr).s().c_str(), IPAddress(iph->ip_dst.s_addr).s().c_str());
     
     if (!p->has_network_header()) {
         fprintf(stderr, "xor doesnt know how to handle this packet (no L3).\n");
@@ -450,136 +433,149 @@ void XORMsg::decrypt(int ports, Packet *p) {
     // the pkt data field, we now need to extract it
     const XORProto *xorpkt = reinterpret_cast<const XORProto *>(p->data()+header_length);
     unsigned long encode_length = xorpkt->Len;
-
-    long unsigned host = xorpkt->Sharehost;
-    long unsigned flow = xorpkt->Flowid;
-
-    std::string data(&xorpkt->Data[0], &xorpkt->Data[0] + xorpkt->Len);
-
+	unsigned long long b_id = xorpkt->SymbolB; // assumes symbols dont move
 
     /* NOTE: for mutex you need to recompile all code to get it to work. */
-    cache_mut.lock();
-    /******************** CRITICAL REGION - KEEP IT SHORT *****************/
-    /* Error when using mutex.
-     * click: malloc.c:2379: sysmalloc: Assertion `(old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)' failed.
-     * Aborted
-     *
-     */
+    recv_mut.lock();
 
     // check if this packet destination is already in our storage queue
-    auto t = storage.find(host);
+    auto t = recv_storage.find(b_id);
 
-    auto tt = completed.find(host);
+	// so how do we store the data.  3 packets, 3 equations, 3 unknowns
+	// if we get 2 packets we can solve for 1 variable. but how do we format
+	// it in memory to be eficient?
 
-    if (tt != completed.end()) {
-        auto comp_map = completed.at(host);
-        auto comp_it = comp_map.find(flow);
-        // packet has already been completed, dont do anything with this one
-        if (comp_it != comp_map.end()){
-                DEBUG_PRINT("finished sending coded packet. dropping this one\n");
-    		completed[host][flow]++;
-		// we've already sent the file, and recieved all the messages, so delete from completed
-		if (completed[host][flow] == _shares-_threshold){
-			completed[host].erase(flow);
+	// key is the unique id
+	// value is pointer to the packet?
+	// wait until all packets arrive in order to maintain we send back to
+	// kernel in-order
+    if (t == recv_storage.end()) {
+		auto y = std::make_pair(2, std::string(xorpkt->Data, xorpkt->Len));
+        recv_storage[b_id].push_back(y);
+		if (xorpkt->SymbolA != 0) {
+			y.first = y.first + 1;
+        	recv_storage[xorpkt->SymbolA].push_back(y);
 		}
-                cache_mut.unlock();
-                return;
+		if (xorpkt->SymbolC != 0) {
+			y.first = y.first + 4;
+        	recv_storage[xorpkt->SymbolC].push_back(y);
+		}
+        recv_mut.unlock();
+        return;
+    } else {
+        auto host_map = recv_storage.at(b_id);
+        // queue is empty, so add this packet and wait for another to come along
+        if (host_map.size() < 2) {
+			auto y = std::make_pair(2, std::string(xorpkt->Data, xorpkt->Len));
+			recv_storage[b_id].push_back(y);
+			if (xorpkt->SymbolA != 0) {
+				y.first = y.first + 1;
+				recv_storage[xorpkt->SymbolA].push_back(y);
+			}
+			if (xorpkt->SymbolC != 0) {
+				y.first = y.first + 4;
+				recv_storage[xorpkt->SymbolC].push_back(y);
+			}
+			recv_mut.unlock();
+			return;
         }
-    }
-
-    if (t == storage.end()) {
-        DEBUG_PRINT("[nh] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
-        storage[host][flow].push_back(data);
-        cache_mut.unlock();
-        return;
-    }
-
-    // this is the container/map for this host
-    auto host_map = storage.at(host);
-    auto flowid = host_map.find(flow);
-
-    // map exists but there is no flowid, so add it
-    if (flowid == host_map.end()) {
-        DEBUG_PRINT("[nf] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
-        storage[host][flow].push_back(data);
-        cache_mut.unlock();
-        return;
-    }
-
-    // flowids do exist in the map, so check if we need to append ours
-    // or if we are ready to do some computation
-    //
-    // including this packet, we still do not have enough to compute
-    //
-    if (storage[host][flow].size()+1 < _threshold) {
-        DEBUG_PRINT("[under] adding %s:%lu to cache\n", IPAddress(host).s().c_str(), flow);
-        storage[host][flow].push_back(data);
-        cache_mut.unlock();
-        return;
     }
 
     DEBUG_PRINT("have enough packets to reconstruct\n");
 
-    // we have enough to compute, create vector of the data
-    std::vector<std::string> encoded;
-    encoded.push_back(data);
-    for (auto x : storage[host][flow]) {
-        encoded.push_back(x);
-    }
 
-    // get back the secret
-    std::string pkt_data = XORMsg::RecoverData(_threshold, encoded);
+	auto host_map = recv_storage.at(b_id);
+	recv_mut.unlock();
 
-    DEBUG_PRINT("Data Out: %lu -- %lu\n", strlen(pkt_data.c_str()), pkt_data.length());
+	std::pair<unsigned int, std::string> x;
+	std::pair<unsigned int, std::string> y;
+	std::pair<unsigned int, std::string> z;
+	for (auto i : host_map) {
+		if (i.first == 7) { // a ^ b ^c
+			x = i;
+		} else if (i.first == 6) { // b ^ c
+			y = i;
+		} else { // 3 -> a ^ b 
+			z = i;
+		}
+	}
+
+	// solve for a 
+	// 6^7
+	char* aa= new char[x.second.length()];
+	uint64_t long chunks = x.second.length() >> 4ULL;
+	for (int i = 0; i < chunks ; ++i){
+		// load our packets into vectors
+		__m128i xx = _mm_loadu_si128 (((__m128i *)x.second.c_str()) + i);
+		__m128i yy = _mm_loadu_si128 (((__m128i *)y.second.c_str()) + i);
+		// xor and our vector back into our xor data buffer
+		_mm_storeu_si128 (((__m128i *)aa) + i, _mm_xor_si128 (xx, yy));
+	}
+	std::string a(aa);
+
+	char* cc= new char[z.second.length()];
+	for (int i = 0; i < chunks ; ++i){
+		// load our packets into vectors
+		__m128i xx = _mm_loadu_si128 (((__m128i *)x.second.c_str()) + i);
+		__m128i zz = _mm_loadu_si128 (((__m128i *)z.second.c_str()) + i);
+		// xor and our vector back into our xor data buffer
+		_mm_storeu_si128 (((__m128i *)cc) + i, _mm_xor_si128 (xx, zz));
+	}
+	std::string c(cc);
+
+	char* bb= new char[y.second.length()];
+	for (int i = 0; i < chunks ; ++i){
+		// load our packets into vectors
+		__m128i aa = _mm_loadu_si128 ((__m128i *)&aa + i);
+		__m128i zz = _mm_loadu_si128 (((__m128i *)z.second.c_str()) + i);
+		// xor and our vector back into our xor data buffer
+		_mm_storeu_si128 (((__m128i *)bb) + i, _mm_xor_si128 (aa, zz));
+	}
+	std::string b(bb);
+
+	std::vector<std::string> deets;
+	deets.push_back(a);
+	deets.push_back(b);
+	deets.push_back(c);
+
+	for ( auto i : deets ) {
+		WritablePacket *pkt = Packet::make(i.length());
+		memcpy((void*)pkt->data(), i.c_str(), i.length());
+
+		// add space at the front to put back on the old ip and mac headers
+		// ip header first
+		Packet *ip_pkt = pkt->push(sizeof(click_ip));
+		memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
 
 
-    WritablePacket *pkt = Packet::make(pkt_data.length());
-    memcpy((void*)pkt->data(), pkt_data.c_str(), pkt_data.length());
+		// TODO/NOTE: these lines in overwritting the ip header are only needed when using Linux Forwarding.
+		click_ip *iph2 = (click_ip *) ip_pkt->data();
+		iph2->ip_len = ntohs( sizeof(click_ip) +  i.length());
+		// END NODE
 
-    // add space at the front to put back on the old ip and mac headers
-    // ip header first
-    Packet *ip_pkt = pkt->push(sizeof(click_ip));
-    memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
+		// mac header next (so its first in the packet)
+		Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
+		memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
 
+		// update the ip header checksum for the next host in the path
+		ip_check(pkt);
 
-    // TODO/NOTE: these lines in overwritting the ip header are only needed when using Linux Forwarding.
-    click_ip *iph2 = (click_ip *) ip_pkt->data();
-    iph2->ip_len = ntohs( sizeof(click_ip) +  pkt_data.length());
-    // END NODE
+		DEBUG_PRINT("xor size: %lu ~~~~ original size: %lu\n", i->length(), new_pkt->length());
 
-    // mac header next (so its first in the packet)
-    Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
-    memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
+		// ship it
+		output(0).push(pkt);
+	}
 
-    // update the ip header checksum for the next host in the path
-    ip_check(pkt);
-
-    DEBUG_PRINT("xor size: %lu ~~~~ original size: %lu\n", p->length(), new_pkt->length());
-
-    // ship it
-    output(0).push(pkt);
-
-    storage[host].erase(flow);
-    // prevent sending duplicated packets after we've reached threshold shares
-    completed[host][flow] = 1;
-    cache_mut.unlock();
 }
 
 // TODO
 void XORMsg::forward(int ports, Packet *p) {
-    // check the xormsg header and forward out all other interfaces
-    // todo on specifying which interfaces
-    //
-    // Debugging
-    //const click_ether *mch = (click_ether *) p->data();
-    //std::cout << "forwarding packet: " << EtherAddress(mch->ether_shost).unparse().c_str() << " -> " << EtherAddress(mch->ether_dhost).unparse().c_str() << "\n";
     output(0).push(p);
 }
 
 // TODO random generation
 // TODO bounds checking on overflow - does this matter? we will force app to manage staleness
 int XORMsg::initialize(ErrorHandler *errh) {
-    _flowid = 0; // shits and giggles we just always random this, 2**32 on collision for good times
     return 0;
 }
 
@@ -599,9 +595,9 @@ void XORMsg::push(int ports, Packet *p) {
     }
 
     if (_function == 0) {
-        encrypt(ports, p);
+        encode(ports, p);
     } else if (_function == 1 ) {
-        decrypt(ports, p);
+        decode(ports, p);
     } else if (_function == 2 ) {
         forward(ports, p);
     } else {
