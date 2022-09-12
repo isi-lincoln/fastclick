@@ -43,9 +43,9 @@ class SSSMsg : public Element {
 		SSSMsg();
 		~SSSMsg();
 
-    		std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<std::string> > > storage; 
-    		std::unordered_map<uint32_t, std::unordered_map<uint32_t, uint32_t> > completed; 
-        	std::mutex cache_mut; // mutex for critical section
+    	std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<std::string> > > storage; 
+    	std::unordered_map<uint32_t, std::unordered_map<uint32_t, uint32_t> > completed; 
+       	std::mutex cache_mut; // mutex for critical section
 
 		const char *class_name() const { return "SSSMsg"; }
 		const char *port_count() const { return "1-/1-"; } // depending on directionality, 1/3+ or 3+/1
@@ -63,7 +63,7 @@ class SSSMsg : public Element {
 		void decrypt(int port, Packet *p);
 		void forward(int port, Packet *p);
 
-                std::vector<std::string> SplitData(int threshold, int nShares, std::string secret);
+        std::vector<std::string> SplitData(int threshold, int nShares, std::string secret);
 		std::string RecoverData(int thresh, std::vector<std::string> shares);
 };
 

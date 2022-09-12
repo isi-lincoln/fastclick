@@ -61,11 +61,14 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     }
 
     /*
-     * if symbols is greater than two, then we need to create & manage
-     * a matrix to track outstanding symbols and be intelligent about
-     * the generation across xor'd packets
+     * TODO: We need to manage in/out interfaces in relation to symbols.
+     * Symbols should be greater than adversary's control, and more than 2.
+     * 2 symbols, and we need to have one be in the clear, which leads to all
+     * sorts of attacks to leak the other.  We ideally want more than 2, because
+     * it makes life simple with coming up with equations that can be solved
+     * without clear text.  May still need to inject noise regardless.
      */
-    if (symbols > 2) {
+    if (symbols != 3) {
         // print error
         return -1;
     }
