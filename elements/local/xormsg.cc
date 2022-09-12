@@ -343,6 +343,7 @@ void XORMsg::encode(int ports, Packet *p) {
 
     }
     send_mut.unlock();
+    pd.push_back(pkt_data);
 	
 	std::vector<XORProto*> pkts = sub_encode(pd);
 
