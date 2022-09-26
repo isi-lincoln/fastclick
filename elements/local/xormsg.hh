@@ -5,6 +5,7 @@
 #include <vector>
 #include <mutex> // cache handling
 #include <chrono> // timer
+#include <tuple>
 
 #include <click/element.hh>
 #include <clicknet/ether.h>
@@ -55,7 +56,7 @@ class XORMsg : public Element {
         ~XORMsg();
 
         std::unordered_map<uint32_t, std::vector<PacketData*> > send_storage; 
-        std::unordered_map<uint64_t, std::vector<std::pair<uint8_t, std::string> > > recv_storage;
+        std::unordered_map<uint64_t, std::vector<std::tuple<uint8_t, std::string, unsigned long long> > > recv_storage;
         std::unordered_map<uint64_t, std::string> solutions;
 
         std::mutex send_mut; // mutex for critical section

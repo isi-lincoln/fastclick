@@ -31,6 +31,7 @@
 #include <sstream> // istream
 #include <emmintrin.h> // _mm_loadu_si128
 #include <utility>      // std::pair, std::make_pair
+#include <tuple> // std::tuple
 #include <string> // string
 #include <random> // random_device
 #include <fcntl.h> // RDONLY
@@ -236,6 +237,7 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
         XORProto *xorpkt = new XORProto;
         xorpkt->Version = 0;
         xorpkt->Len = rand_length;
+        xorpkt->Timer = static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(i->timestamp.time_since_epoch()).count());
         //DEBUG_PRINT("xor length: %u\n", xorpkt->Len);
         memset(xorpkt->Data, 0, rand_length);
 
@@ -371,23 +373,26 @@ void XORMsg::encode(int ports, Packet *p) {
         send_mut.unlock();
         return;
     } else {
-        auto host_map = send_storage.at(dst_host);
+	std::vector<PacketData*> *host_map = &send_storage.at(dst_host);
         // queue is empty, so add this packet and wait for another to come along
-        if (host_map.size() < 2) {
-            DEBUG_PRINT("adding: %llu\n", pdd->id);
-            send_storage[dst_host].push_back(pdd);
+        DEBUG_PRINT("adding: %llu\n", pdd->id);
+        send_storage[dst_host].push_back(pdd);
+
+        if (host_map->size() < 3) {
             send_mut.unlock();
             return;
         }
 
-        DEBUG_PRINT("adding: %llu\n", pdd->id);
-        pdv.push_back(pdd);
-
-        for (auto i = host_map.begin(); i != host_map.end(); ++i ) {
+        for (auto i = host_map->begin(); i != host_map->end(); ++i ) {
             pdv.push_back(*i);
             //DEBUG_PRINT("removing: %llu\n", (*i)->id);
         }
 
+
+	// TODO left off here to solve the segfault
+
+	// remove one elemnt from our list to keep a window
+	//send_storage.erase(send_storage.at(dst_host).begin());
 
     }
     send_mut.unlock();
@@ -402,7 +407,7 @@ void XORMsg::encode(int ports, Packet *p) {
     unsigned iface_counter = 0;
     // now lets create the shares
     for (auto i: pkts) {
-	      //DEBUG_PRINT("out: %u\n", i->Len);
+	DEBUG_PRINT("port: %u -- out: %u\n", iface_counter, i->Len);
         WritablePacket *pkt = Packet::make(i, (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)));
 
         // we done screwed up.
@@ -431,6 +436,10 @@ void XORMsg::encode(int ports, Packet *p) {
 
         iface_counter++;
     }
+
+    std::vector<PacketData*> *host_map = &send_storage.at(dst_host);
+    host_map->erase(host_map->begin());
+    DEBUG_PRINT("storage size: %lu\n", send_storage.at(dst_host).size());
 
 }
 
@@ -504,13 +513,14 @@ void XORMsg::decode(int ports, Packet *p) {
     // wait until all packets arrive in order to maintain we send back to
     // kernel in-order
     if (t == recv_storage.end()) {
-        auto y = std::make_pair(2, std::string(xorpkt->Data, encode_length));
+        auto id = 2;
         if (a_id != 0) {
-            y.first = y.first + 1;
+            id = id + 1;
         }
         if (c_id != 0) {
-            y.first = y.first + 4;
+            id = id + 4;
         }
+        auto y = std::make_tuple(id, std::string(xorpkt->Data, encode_length), xorpkt->Timer);
 
         recv_storage[b_id].push_back(y);
         if (a_id != 0) {
@@ -526,13 +536,14 @@ void XORMsg::decode(int ports, Packet *p) {
         auto host_map = recv_storage.at(b_id);
         // queue is empty, so add this packet and wait for another to come along
         if (host_map.size() < 3) {
-            auto y = std::make_pair(2, std::string(xorpkt->Data, encode_length));
+            auto id = 2;
             if (a_id != 0) {
-                y.first = y.first + 1;
+                id = id + 1;
             }
             if (c_id != 0) {
-                y.first = y.first + 4;
+                id = id + 4;
             }
+            auto y = std::make_tuple(id, std::string(xorpkt->Data, encode_length), xorpkt->Timer);
 
             recv_storage[b_id].push_back(y);
             if (a_id != 0) {
@@ -554,70 +565,112 @@ void XORMsg::decode(int ports, Packet *p) {
     auto host_map = recv_storage.at(b_id);
     recv_mut.unlock();
 
-    std::pair<unsigned int, std::string> x;
-    std::pair<unsigned int, std::string> y;
-    std::pair<unsigned int, std::string> z;
+    std::tuple<unsigned int, std::string, unsigned long long> x;
+    std::tuple<unsigned int, std::string, unsigned long long> y;
+    std::tuple<unsigned int, std::string, unsigned long long> z;
     for (auto i : host_map) {
-        DEBUG_PRINT("symbols: %u, data length: %lu\n", i.first, i.second.length());
-        if (i.first == 7) { // a ^ b ^c
+        DEBUG_PRINT("symbols: %u, data length: %lu\n", std::get<0>(i), std::get<1>(i).length());
+        if (std::get<0>(i) == 7) { // a ^ b ^c
             x = i;
-        } else if (i.first == 6) { // b ^ c
+        } else if (std::get<0>(i) == 6) { // b ^ c
             y = i;
         } else { // 3 -> a ^ b 
             z = i;
         }
     }
 
+    std::string xs = std::get<1>(x);
+    std::string ys = std::get<1>(y);
+    std::string zs = std::get<1>(z);
     // TODO: after confirmed correctness, reduce to single loop
 
+    uint64_t long chunks = xs.length() >> 4ULL;
     // solve for a // 1
     // 6^7 // (b^c)^(a^b^c) // x^y
-    char* aa= new char[x.second.length()];
-    uint64_t long chunks = x.second.length() >> 4ULL;
-    for (int i = 0; i < chunks ; ++i){
-        // load our packets into vectors
-        __m128i xx = _mm_loadu_si128 (((__m128i *)x.second.c_str()) + i);
-        __m128i yy = _mm_loadu_si128 (((__m128i *)y.second.c_str()) + i);
-        // xor and our vector back into our xor data buffer
-        _mm_storeu_si128 (((__m128i *)aa) + i, _mm_xor_si128 (xx, yy));
+    char* aa = new char[xs.length()];
+    std::string a;
+
+    auto aaa = solutions.find(a_id);
+    if ( aaa == solutions.end() ) {
+        for (int i = 0; i < chunks ; ++i){
+            // load our packets into vectors
+            __m128i xx = _mm_loadu_si128 (((__m128i *)xs.c_str()) + i);
+            __m128i yy = _mm_loadu_si128 (((__m128i *)ys.c_str()) + i);
+            // xor and our vector back into our xor data buffer
+            _mm_storeu_si128 (((__m128i *)aa) + i, _mm_xor_si128 (xx, yy));
+        }
+        a = std::string(aa, xs.length());
+        //DEBUG_PRINT("a length: %lu, aa: %lu \n", a.length(), xs.length());
+    } else {
+        a = aa;
+        DEBUG_PRINT("a used solution\n");
     }
-    std::string a(aa, x.second.length());
-    DEBUG_PRINT("a length: %lu, aa: %lu \n", a.length(), x.second.length());
 
     // solve for c // 4
     // 3^7 // (a^b)^(a^b^c) // x^z
-    char* cc= new char[z.second.length()];
-    for (int i = 0; i < chunks ; ++i){
-        // load our packets into vectors
-        __m128i xx = _mm_loadu_si128 (((__m128i *)x.second.c_str()) + i);
-        __m128i zz = _mm_loadu_si128 (((__m128i *)z.second.c_str()) + i);
-        // xor and our vector back into our xor data buffer
-        _mm_storeu_si128 (((__m128i *)cc) + i, _mm_xor_si128 (xx, zz));
+    char* cc= new char[zs.length()];
+    std::string c;
+
+    auto ccc = solutions.find(c_id);
+    if ( ccc == solutions.end() ) {
+        for (int i = 0; i < chunks ; ++i){
+            // load our packets into vectors
+            __m128i xx = _mm_loadu_si128 (((__m128i *)xs.c_str()) + i);
+            __m128i zz = _mm_loadu_si128 (((__m128i *)zs.c_str()) + i);
+            // xor and our vector back into our xor data buffer
+            _mm_storeu_si128 (((__m128i *)cc) + i, _mm_xor_si128 (xx, zz));
+        }
+        c = std::string(cc, zs.length());
+        //DEBUG_PRINT("c length: %lu, cc: %lu \n", c.length(), zs.length());
+    } else {
+        c = cc;
+        DEBUG_PRINT("c used solution\n");
     }
-    std::string c(cc, z.second.length());
-    DEBUG_PRINT("c length: %lu, cc: %lu \n", c.length(), z.second.length());
 
     // solve for b // 2
     // 1^3 // a^(a^b) // a^z
-    char* bb= new char[y.second.length()];
-    for (int i = 0; i < chunks ; ++i){
-        // load our packets into vectors
-        __m128i aa = _mm_loadu_si128 ((__m128i *)&aa + i);
-        __m128i zz = _mm_loadu_si128 (((__m128i *)z.second.c_str()) + i);
-        // xor and our vector back into our xor data buffer
-        _mm_storeu_si128 (((__m128i *)bb) + i, _mm_xor_si128 (aa, zz));
+    char* bb= new char[ys.length()];
+    std::string b;
+
+    auto bbb = solutions.find(b_id);
+    if ( bbb == solutions.end() ) {
+        for (int i = 0; i < chunks ; ++i){
+            // load our packets into vectors
+            __m128i aa = _mm_loadu_si128 ((__m128i *)&aa + i);
+            __m128i zz = _mm_loadu_si128 (((__m128i *)zs.c_str()) + i);
+            // xor and our vector back into our xor data buffer
+            _mm_storeu_si128 (((__m128i *)bb) + i, _mm_xor_si128 (aa, zz));
+        }
+        b = std::string(bb, ys.length());
+        //DEBUG_PRINT("b length: %lu, bb: %lu \n", b.length(), ys.length());
+    } else {
+        b = bb;
+        DEBUG_PRINT("b used solution\n");
     }
-    std::string b(bb, y.second.length());
-    DEBUG_PRINT("b length: %lu, bb: %lu \n", b.length(), y.second.length());
 
+
+    // only add a packet to sending out list if it has not already been added
     std::vector<std::string> deets;
-    deets.push_back(a);
-    deets.push_back(b);
-    deets.push_back(c);
 
-    solutions[a_id] = a;
-    solutions[b_id] = b;
-    solutions[c_id] = c;
+    recv_mut.lock();
+    auto a_solved = solutions.find(a_id);
+    if (a_solved == solutions.end()) {
+        deets.push_back(a);
+        solutions[a_id] = a;
+    }
+
+    auto b_solved = solutions.find(b_id);
+    if (b_solved == solutions.end()) {
+        deets.push_back(b);
+        solutions[b_id] = b;
+    }
+
+    auto c_solved = solutions.find(c_id);
+    if (c_solved == solutions.end()) {
+        deets.push_back(c);
+        solutions[c_id] = c;
+    }
+    recv_mut.unlock();
 
     for (int i=0; i < a.length(); i++) {
         DEBUG_PRINT("%x", a.c_str()[i]);
@@ -632,6 +685,7 @@ void XORMsg::decode(int ports, Packet *p) {
         WritablePacket *pkt = Packet::make(i.length());
         memcpy((void*)pkt->data(), i.c_str(), i.length());
 
+        // set the original packet header information
         pkt->set_mac_header(pkt->data());
         pkt->set_network_header(pkt->data()+DEFAULT_MAC_LEN);
 

@@ -30,7 +30,9 @@ struct XORProto {
 	unsigned long long SymbolA: 48; // unique packet identifer for A
 	unsigned long long SymbolB: 48;  // unique packet identifer for B
 	unsigned long long SymbolC: 48;  // unique packet identifer for C
+	unsigned long long Timer: 64;
 #elif CLICK_BYTE_ORDER == CLICK_LITTLE_ENDIAN
+	unsigned long long Timer: 64;
 	unsigned long long SymbolC: 48;  // unique packet identifer for B
 	unsigned long long SymbolB: 48;  // unique packet identifer for B
 	unsigned long long SymbolA: 48; // unique packet identifer for A
