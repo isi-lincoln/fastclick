@@ -18,6 +18,9 @@ CLICK_DECLS
 
 class PacketData{
     public:
+	const unsigned char *nh;
+	const unsigned char *mh;
+
         std::string data;
         unsigned long long id; // unique identifier
 
@@ -27,6 +30,11 @@ class PacketData{
         PacketData() {}
         PacketData(std::string d, unsigned long long i, std::chrono::high_resolution_clock::time_point ts) : data(d), id(i), timestamp(ts) {}
         ~PacketData();
+
+	void SetHeaders(const unsigned char *n, const unsigned char *m) {
+	    nh = n;
+	    mh = m;
+	}
 };
 
 /*
@@ -43,8 +51,12 @@ class XORMsg : public Element {
     // 0: encode, 1: decode
     uint8_t _function;
 
-    // symbols to use (assume 2)
+    // symbols to use (assume 3 minimum)
     uint8_t _symbols;
+
+    // latency for stray packets that dont have other packets
+    // to XOR with
+    unsigned long _latency;
 
     // unique identifiers for the xor'd packets
     uint64_t _sym_a;
@@ -77,6 +89,9 @@ class XORMsg : public Element {
         void encode(int port, Packet *p);
         void decode(int port, Packet *p);
         void forward(int port, Packet *p);
+
+        void send_packets(std::vector<XORProto*> pkts, const unsigned char* nh, const unsigned char* mh, unsigned long dhost);
+	void latency_checker();
 };
 
 

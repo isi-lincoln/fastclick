@@ -17,14 +17,8 @@
 #include <clicknet/tcp.h> // tcp header checksum
 #include <clicknet/udp.h> // udp header checksum
 
-// protocol files
-#include "xorproto.hh"
-#include "xormsg.hh"
-
 //#include <mutex>          // std::mutex
 #include <assert.h>    // sanity check
-#include <iostream>
-
 #include <iostream>
 #include <cstdlib>
 #include <cstdint> // ULLONG_MAX
@@ -36,7 +30,12 @@
 #include <random> // random_device
 #include <fcntl.h> // RDONLY
 #include <algorithm> // max_element
+#include <thread> // thread to handle background routine
 
+// protocol files
+#include "xorproto.hh"
+#include "xormsg.hh"
+#include "bloom/bloom_filter.hpp"
 
 void print_vector(__m128i v){
     uint16_t val[8];
@@ -47,9 +46,24 @@ void print_vector(__m128i v){
 
 CLICK_DECLS
 
-XORMsg::XORMsg() { };
-XORMsg::~XORMsg() { };
+// globals
+// random number generation
+std::random_device r;
+std::seed_seq seed{ r(), r(), r(), r(), r(), r(), r(), r() };
+std::mt19937 eng(seed);
+// bloom filter
+bloom_filter filter;
+// packet queue (dst_host, symbol, arrival time)
+std::vector<std::tuple<
+    unsigned long, // ip address of dst host
+    unsigned long long, // symbol
+    std::chrono::high_resolution_clock::time_point> // timestamp
+> pkt_queue;
 
+unsigned long long get_64_rand() {
+    std::uniform_int_distribution< unsigned long long > uid(0, ULLONG_MAX);
+    return uid(eng);
+}
 
 // update IP packet checksum
 void ip_check(WritablePacket *p) {
@@ -58,73 +72,105 @@ void ip_check(WritablePacket *p) {
     iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
 }
 
-// allow the user to configure the shares and threshold amounts
-int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
-    uint8_t symbols;
-    uint8_t function;
-    if (Args(conf, this, errh)
-        .read_mp("symbols", symbols) // positional
-        .read_mp("PURPOSE", function) // positional
-        .complete() < 0){
-            return -1;
-    }
-
-    /*
-     * TODO: We need to manage in/out interfaces in relation to symbols.
-     * Symbols should be greater than adversary's control, and more than 2.
-     * 2 symbols, and we need to have one be in the clear, which leads to all
-     * sorts of attacks to leak the other.  We ideally want more than 2, because
-     * it makes life simple with coming up with equations that can be solved
-     * without clear text.  May still need to inject noise regardless.
-     */
-    if (symbols != 3) {
-        // print error
-        return -1;
-    }
-
-    // having a single symbol makes no sense.
-    if (symbols < 2) {
-        return -1;
-    }
-
-    _symbols = symbols;
-    _function = function;
-
-    return 0;
-}
-
-std::random_device r;
-std::seed_seq seed{ r(), r(), r(), r(), r(), r(), r(), r() };
-std::mt19937 eng(seed);
-
-unsigned long long get_64_rand() {
-    std::uniform_int_distribution< unsigned long long > uid(0, ULLONG_MAX);
-    return uid(eng);
-}
-
+// this will attempt to make sure our 48 bit randoms are unique
+// TODO: some out of band mgmt to request between nodes a cleaning
+// of solutions and bloom filter to reduce the number of times
+// rand has to be called to get a unique id - stupid alternative
+// restart both every X ofter to remove from memory the ids.
 unsigned long long get_48_rand() {
-    return get_64_rand() & 0xffffffffffff;
+    unsigned long long r48 = get_64_rand() & 0xffffffffffff;
+    while (filter.contains(r48)) {
+        DEBUG_PRINT("bloom filter request: %llu\n", r48);
+        r48 = get_64_rand() & 0xffffffffffff;
+    }
+    return r48;
 }
 
-uint8_t get_8_rand() {
-    std::uniform_int_distribution< uint8_t > uid(0, UCHAR_MAX);
-    return uid(eng);
-}
 
+XORMsg::XORMsg() { };
+XORMsg::~XORMsg() { };
+
+// create a memory buffer the size of length filled by urand
 void populate_packet(void* buffer, unsigned long long length) {
     int fd = open("/dev/urandom", O_RDONLY);
     assert(fd > 0); 
-    read(fd, buffer, length);
+    int size = read(fd, buffer, length); // unused result
     return;
 }
 
-std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
+// create a PacketData struct filled with random data of size length
+PacketData* generate_packet(unsigned long long length) {
+    char* buf = (char*) malloc(length);
+    populate_packet(buf, length);
+
+    PacketData* x = new PacketData(std::string(buf, length), get_48_rand(), std::chrono::high_resolution_clock::now());
+    free(buf);
+
+    return x;
+}
+
+
+// work horse for all functions that need to send a packet.
+// requires having a L3 (nh) and L2 (mh) header to overwrite before sending the packet.
+// because XOR only handles the data of the packet, we need to have an unspoiled header.
+void XORMsg::send_packets(std::vector<XORProto*> pkts, const unsigned char* nh, const unsigned char* mh, unsigned long dst_host) {
+    DEBUG_PRINT("a: %llu\n", pkts[0]->SymbolA);
+    DEBUG_PRINT("b: %llu\n", pkts[0]->SymbolB);
+    DEBUG_PRINT("c: %llu\n", pkts[0]->SymbolC);
+
+
+    // TODO: this assumes a 1-1 matching between packets being XORd and interfaces
+    unsigned iface_counter = 0;
+    // now lets create the shares
+    for (auto i: pkts) {
+        DEBUG_PRINT("port: %u -- out: %u\n", iface_counter, i->Len);
+        WritablePacket *pkt = Packet::make(i, (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)));
+
+        // we done screwed up.
+        if (!pkt) return;
+
+        // add space at the front to put back on the old ip and mac headers
+        Packet *ip_pkt = pkt->push(sizeof(click_ip));
+        memcpy((void*)ip_pkt->data(), (void*)nh, sizeof(click_ip));
+
+        // update ip packet size = ip header + xor header + xor data
+        // TODO/NOTE: these lines in overwritting the ip header are only needed when using Linux Forwarding.
+        click_ip *iph2 = (click_ip *) ip_pkt->data();
+        iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)) );
+        // END NOTE
+
+        iph2->ip_p = 0;//144-252
+        // update the ip header checksum for the next host in the path
+        ip_check(pkt);
+
+        // This sets/annotates the network header as well as pushes into packet
+        Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
+        memcpy((void*)new_pkt->data(), (void*)mh, sizeof(click_ether));
+
+        // send packet out the given port
+        output(iface_counter).push(new_pkt);
+
+        iface_counter++;
+    }
+
+    // remove the packet from the mapping of packets to handle
+    std::vector<PacketData*> *host_map = &send_storage.at(dst_host);
+    host_map->erase(host_map->begin());
+    DEBUG_PRINT("storage size: %lu\n", send_storage.at(dst_host).size());
+}
+
+
+/*
+ * Handles the incoming packets to be coded together (XOR)
+*/
+std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd, unsigned symbols) {
     // validate we are trying to encode at least 2 packets
     if (pd.size() < 2) {
         fprintf(stderr, "number of packets to encode must be greater than 1.\n");
         return {};
     }
 
+    // go through all the packets
     std::vector<unsigned long> lengths;
     for (auto i : pd) {
         lengths.push_back(i->data.length());
@@ -135,7 +181,7 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
 
 
     // we want minimum 3 packets
-    if (pd.size() == 2) {
+    if (pd.size() == symbols-1 ) {
         // some non-zero probability of collision 2**48
         // TODO: check with current ids to make that probability 0
         PacketData* x = new PacketData("", get_48_rand(), std::chrono::high_resolution_clock::now());
@@ -299,6 +345,151 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd) {
     return xordata;
 }
 
+
+/*
+ * Background daemon that will monitor our packet queue.
+ *
+ * If a packet sits in the queue too long, this function is responsible
+ * for generate fake traffic that can then be xor'd with the data.
+ *
+*/
+void XORMsg::latency_checker() {
+    DEBUG_PRINT("packet latency background begun.\n");
+    while(1) {
+        auto now = std::chrono::high_resolution_clock::now();
+        
+        // create lock to begin checking pkt queue, we need to do this quickly
+        send_mut.lock();
+        auto pkts_in_queue = pkt_queue.size();
+
+        // check if we have an outstanding packet
+        // TODO would be to have the top packet already in memory to check
+        if (pkts_in_queue >= 1 && pkts_in_queue < _symbols) {
+            
+            // get the first packet in the queue, because this is fifo
+            // first packet will tell us how long all other packets are
+            // waiting as well.
+            auto dst_host = std::get<0>(pkt_queue[0]);
+            auto symbol = std::get<1>(pkt_queue[0]);
+            auto ts = std::get<2>(pkt_queue[0]);
+            unsigned long length;
+
+            std::vector<PacketData*> pkts;
+
+            // check if the oldest packet has been waiting beyond our wait time
+            if (ts + std::chrono::milliseconds(_latency) <= now) {
+
+                 // search our global packet struct
+                 auto t = send_storage.find(dst_host);
+
+                 std::vector<PacketData*> host_map = send_storage.at(dst_host);
+                 int fake_pkts = _symbols - pkts_in_queue;
+
+                 // copy packets from the global queue to a local one to handle pkt sending
+                 for (auto it = host_map.begin(); it != host_map.end(); ++it) {
+                 //for (auto i : host_map) {
+                     PacketData* y;
+                     memcpy(&y, &*it, sizeof(PacketData*));
+                     pkts.push_back(y);
+                     length = (*it)->data.length();
+
+                     // start clearing the memory management
+                     host_map.erase(it);
+                     pkt_queue.erase(pkt_queue.begin());
+                 }
+                 send_mut.unlock();
+
+                 // TODO: create fake packets 
+                 for (int i = 0; i < fake_pkts; i++) {
+                     PacketData* xp = generate_packet(length);
+                     pkts.push_back(xp);
+                 }
+
+                 // actually send the packet off
+                 std::vector<XORProto*> xor_pkts = sub_encode(pkts, _symbols);
+
+                 const unsigned char *mh = pkts[0]->mh;
+                 const unsigned char *nh = pkts[1]->nh;
+
+                 send_packets(xor_pkts, nh, mh, dst_host);
+
+            } else {
+                send_mut.unlock();
+            }
+        } else {
+            send_mut.unlock();
+        }
+
+        //until next interation sleep
+        std::this_thread::sleep_for(std::chrono::milliseconds(_latency));
+    }
+}
+
+
+
+// allow the user to configure the shares and threshold amounts
+int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
+    uint8_t symbols;
+    uint8_t function;
+    unsigned long latency; // measured in milliseconds
+    if (Args(conf, this, errh)
+        .read_mp("symbols", symbols) // positional
+        .read_mp("PURPOSE", function) // positional
+        .read_mp("latency", latency) // positional
+        .complete() < 0){
+            return -1;
+    }
+
+    /*
+     * TODO: We need to manage in/out interfaces in relation to symbols.
+     * Symbols should be greater than adversary's control, and more than 2.
+     * 2 symbols, and we need to have one be in the clear, which leads to all
+     * sorts of attacks to leak the other.  We ideally want more than 2, because
+     * it makes life simple with coming up with equations that can be solved
+     * without clear text.  May still need to inject noise regardless.
+     */
+    if (symbols < 3) {
+        // print error
+        return -1;
+    }
+
+    _symbols = symbols;
+    _function = function;
+
+    if (latency <= 0) {
+        printf("max stray packet latency override to 100ms\n");
+        _latency = 100;
+    } else {
+        _latency = latency;
+    }
+
+
+    // configure/initialize the bloom filter
+    // filter is used for storing unique ids/symbols for xoring
+    bloom_parameters parameters;
+    parameters.projected_element_count = ULLONG_MAX; // How many elements roughly do we expect to insert?
+    parameters.false_positive_probability = 0.0000001; // Maximum tolerable false positive probability? (0,1)
+    parameters.random_seed = get_64_rand();
+    parameters.compute_optimal_parameters();
+    filter = bloom_filter(parameters);  //Instantiate Bloom Filter
+
+    // start pkt latency service
+    // ensure that 
+    std::thread listener(&XORMsg::latency_checker, this);
+
+    return 0;
+}
+
+
+
+uint8_t get_8_rand() {
+    std::uniform_int_distribution< uint8_t > uid(0, UCHAR_MAX);
+    return uid(eng);
+}
+
+
+
+
 void XORMsg::encode(int ports, Packet *p) {
     // packet is too large
     if (p->length() > XORPROTO_DATA_LEN) {
@@ -354,9 +545,13 @@ void XORMsg::encode(int ports, Packet *p) {
     std::string pkt_data(reinterpret_cast<const char *>(p->data()), p->length());
     //std::string pkt_data(const_cast<unsigned char*>(p->data()), p->length());
     PacketData *pdd = new PacketData(pkt_data, get_48_rand(), std::chrono::high_resolution_clock::now());
+    pdd->SetHeaders(nh, mh);
 
     // critical region, lock.
     send_mut.lock();
+
+    // add to our bloom filter while in the lock
+    filter.insert(pdd->id);
 
     // we have 1 packet, we want to see if we have another packet in the queue
     // if we do, great we can xor
@@ -373,12 +568,12 @@ void XORMsg::encode(int ports, Packet *p) {
         send_mut.unlock();
         return;
     } else {
-	std::vector<PacketData*> *host_map = &send_storage.at(dst_host);
+        std::vector<PacketData*> *host_map = &send_storage.at(dst_host);
         // queue is empty, so add this packet and wait for another to come along
         DEBUG_PRINT("adding: %llu\n", pdd->id);
         send_storage[dst_host].push_back(pdd);
 
-        if (host_map->size() < 3) {
+        if (host_map->size() < _symbols) {
             send_mut.unlock();
             return;
         }
@@ -388,58 +583,12 @@ void XORMsg::encode(int ports, Packet *p) {
             //DEBUG_PRINT("removing: %llu\n", (*i)->id);
         }
 
-
-	// TODO left off here to solve the segfault
-
-	// remove one elemnt from our list to keep a window
-	//send_storage.erase(send_storage.at(dst_host).begin());
-
     }
     send_mut.unlock();
     
-    std::vector<XORProto*> pkts = sub_encode(pdv);
+    std::vector<XORProto*> pkts = sub_encode(pdv, _symbols);
 
-    DEBUG_PRINT("a: %llu\n", pkts[0]->SymbolA);
-    DEBUG_PRINT("b: %llu\n", pkts[0]->SymbolB);
-    DEBUG_PRINT("c: %llu\n", pkts[0]->SymbolC);
-
-    // TODO: this assumes a 1-1 matching between packets being XORd and interfaces
-    unsigned iface_counter = 0;
-    // now lets create the shares
-    for (auto i: pkts) {
-	DEBUG_PRINT("port: %u -- out: %u\n", iface_counter, i->Len);
-        WritablePacket *pkt = Packet::make(i, (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)));
-
-        // we done screwed up.
-        if (!pkt) return;
-
-        // add space at the front to put back on the old ip and mac headers
-        Packet *ip_pkt = pkt->push(sizeof(click_ip));
-        memcpy((void*)ip_pkt->data(), nh, sizeof(click_ip));
-
-        // update ip packet size = ip header + xor header + xor data
-        // TODO/NOTE: these lines in overwritting the ip header are only needed when using Linux Forwarding.
-        click_ip *iph2 = (click_ip *) ip_pkt->data();
-        iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)) );
-        // END NOTE
-
-        iph2->ip_p = 0;//144-252
-        // update the ip header checksum for the next host in the path
-        ip_check(pkt);
-
-        // This sets/annotates the network header as well as pushes into packet
-        Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
-        memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
-
-        // send packet out the given port
-        output(iface_counter).push(new_pkt);
-
-        iface_counter++;
-    }
-
-    std::vector<PacketData*> *host_map = &send_storage.at(dst_host);
-    host_map->erase(host_map->begin());
-    DEBUG_PRINT("storage size: %lu\n", send_storage.at(dst_host).size());
+    send_packets(pkts, nh, mh, dst_host);
 
 }
 
@@ -535,7 +684,7 @@ void XORMsg::decode(int ports, Packet *p) {
     } else {
         auto host_map = recv_storage.at(b_id);
         // queue is empty, so add this packet and wait for another to come along
-        if (host_map.size() < 3) {
+        if (host_map.size() < _symbols) {
             auto id = 2;
             if (a_id != 0) {
                 id = id + 1;
@@ -553,7 +702,7 @@ void XORMsg::decode(int ports, Packet *p) {
                 recv_storage[c_id].push_back(y);
             }
 
-            if (recv_storage[b_id].size() != 3) {
+            if (recv_storage[b_id].size() != _symbols) {
                 recv_mut.unlock();
                 return;
             }
