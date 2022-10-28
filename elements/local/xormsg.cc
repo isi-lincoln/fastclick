@@ -29,14 +29,16 @@
 #include <string> // string
 #include <random> // random_device
 #include <fcntl.h> // RDONLY
-#include <algorithm> // max_element
+#include <algorithm> // max_element, find
 #include <thread> // thread to handle background routine
+#include <errno.h> // get the err for open
 
 // protocol files
 #include "xorproto.hh"
 #include "xormsg.hh"
 #include "bloom/bloom_filter.hpp"
 
+// debuging simd vectors
 void print_vector(__m128i v){
     uint16_t val[8];
     memcpy(val, &v, sizeof(val));
@@ -92,9 +94,39 @@ XORMsg::~XORMsg() { };
 
 // create a memory buffer the size of length filled by urand
 void populate_packet(void* buffer, unsigned long long length) {
+    DEBUG_PRINT("populate packet\n");
+    // urandom fd was return non-0, and I dont really want that to ever be the case
+    errno = 0;
     int fd = open("/dev/urandom", O_RDONLY);
-    assert(fd > 0); 
+    if (errno !=  0) {
+        DEBUG_PRINT("urandom fd returned: %d, errno: %d\n", fd, errno);
+        int end = close(fd);
+        populate_packet(buffer, length);
+        return;
+    }
     int size = read(fd, buffer, length); // unused result
+    int end = close(fd);
+    return;
+
+    /*
+    long byte_count;
+    for (byte_count = 0; byte_count < length/8; ++byte_count) {
+        unsigned long long tmp = get_64_rand();
+        memcpy(&buffer + byte_count*8, (void*)tmp, sizeof(unsigned long long));
+        //buffer[byte_count*8] = tmp;
+    }
+
+    int left_over = length % 8;
+    if (left_over > 0) {
+        for (int i = 0; i < left_over; i++){
+            uint8_t tmp = get_64_rand() && 0xff;
+            memcpy(&buffer + ((byte_count*8)+i), (void*)tmp, sizeof(uint8_t));
+            //buffer[(byte_count*8)+i] = tmp;
+        }
+    
+    }
+    */
+
     return;
 }
 
@@ -102,10 +134,10 @@ void populate_packet(void* buffer, unsigned long long length) {
 PacketData* generate_packet(unsigned long long length) {
     char* buf = (char*) malloc(length);
     populate_packet(buf, length);
+    WritablePacket *pkt = Packet::make(buf, length);
+    PacketData* x = new PacketData(pkt, get_48_rand(), std::chrono::high_resolution_clock::now());
 
-    PacketData* x = new PacketData(std::string(buf, length), get_48_rand(), std::chrono::high_resolution_clock::now());
-    free(buf);
-
+    free(buf); // TODO, is make copying?
     return x;
 }
 
@@ -147,6 +179,7 @@ void XORMsg::send_packets(std::vector<XORProto*> pkts, const unsigned char* nh, 
         Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
         memcpy((void*)new_pkt->data(), (void*)mh, sizeof(click_ether));
 
+        DEBUG_PRINT("sending packet for interface: %d\n", iface_counter);
         // send packet out the given port
         output(iface_counter).push(new_pkt);
 
@@ -154,9 +187,11 @@ void XORMsg::send_packets(std::vector<XORProto*> pkts, const unsigned char* nh, 
     }
 
     // remove the packet from the mapping of packets to handle
+    send_mut.lock();
     std::vector<PacketData*> *host_map = &send_storage.at(dst_host);
-    host_map->erase(host_map->begin());
+    host_map->erase(host_map->begin(), host_map->end());
     DEBUG_PRINT("storage size: %lu\n", send_storage.at(dst_host).size());
+    send_mut.unlock();
 }
 
 
@@ -173,7 +208,8 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd, unsigned symbols)
     // go through all the packets
     std::vector<unsigned long> lengths;
     for (auto i : pd) {
-        lengths.push_back(i->data.length());
+        lengths.push_back(i->GetDataLength());
+        DEBUG_PRINT("length: %lu\n", i->GetDataLength());
     }
 
     // find smallest and longest sized packets, excluding 0 length if given
@@ -182,9 +218,11 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd, unsigned symbols)
 
     // we want minimum 3 packets
     if (pd.size() == symbols-1 ) {
+        DEBUG_PRINT("creating a new packet\n\n\n");
         // some non-zero probability of collision 2**48
         // TODO: check with current ids to make that probability 0
-        PacketData* x = new PacketData("", get_48_rand(), std::chrono::high_resolution_clock::now());
+        WritablePacket *pkt = Packet::make(std::string("").c_str(), 0);
+        PacketData* x = new PacketData(pkt, get_48_rand(), std::chrono::high_resolution_clock::now());
         pd.push_back(x);
     }
 
@@ -263,7 +301,7 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd, unsigned symbols)
     DEBUG_PRINT("random length: %lu\n", rand_length);
 
     for ( auto i : pd ) {
-        unsigned long str_len = i->data.length();
+        unsigned long str_len = i->GetDataLength();
         long padding = rand_length - str_len;
         if (padding <= 0) {
             assert(padding >= 0); // should never be negative
@@ -271,6 +309,7 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd, unsigned symbols)
         }
         // we need to append data to our packet
         char* buf = (char*) malloc(padding);
+        DEBUG_PRINT("adding padding to the packet\n");
         populate_packet(buf, padding);
         i->data.append((char*)buf);
         free(buf);
@@ -354,17 +393,34 @@ std::vector<XORProto*> sub_encode(std::vector<PacketData*> pd, unsigned symbols)
  *
 */
 void XORMsg::latency_checker() {
-    DEBUG_PRINT("packet latency background begun.\n");
+
+    std::string function;
+    if (_function == 0) {
+        function = "encode thread";
+    } else if (_function == 1) {
+        function = "decode thread";
+    } else {
+        function = "forwarding thread";
+    }
+    DEBUG_PRINT("packet latency background begun for %s.\n", function.c_str());
     while(1) {
         auto now = std::chrono::high_resolution_clock::now();
         
+        // latency check works on both encode and decode, so use the appropriate datastructures
+        if (_function == 0) {
+            send_mut.lock();
+        } else {
+            recv_mut.lock();
+        }
         // create lock to begin checking pkt queue, we need to do this quickly
         send_mut.lock();
         auto pkts_in_queue = pkt_queue.size();
 
         // check if we have an outstanding packet
         // TODO would be to have the top packet already in memory to check
+        DEBUG_PRINT("latency: pkts in queue: %ld, symbols: %d.\n", pkts_in_queue, _symbols);
         if (pkts_in_queue >= 1 && pkts_in_queue < _symbols) {
+            DEBUG_PRINT("latency: pkts in queue: %ld, symbols: %d.\n", pkts_in_queue, _symbols);
             
             // get the first packet in the queue, because this is fifo
             // first packet will tell us how long all other packets are
@@ -378,7 +434,7 @@ void XORMsg::latency_checker() {
 
             // check if the oldest packet has been waiting beyond our wait time
             if (ts + std::chrono::milliseconds(_latency) <= now) {
-
+                 DEBUG_PRINT("latency: over limit: %lu .\n", (now.time_since_epoch() -ts.time_since_epoch()).count());
                  // search our global packet struct
                  auto t = send_storage.find(dst_host);
 
@@ -393,9 +449,11 @@ void XORMsg::latency_checker() {
                      pkts.push_back(y);
                      length = (*it)->data.length();
 
+                     DEBUG_PRINT("before cleanup.\n");
                      // start clearing the memory management
                      host_map.erase(it);
                      pkt_queue.erase(pkt_queue.begin());
+                     DEBUG_PRINT("after cleanup.\n");
                  }
                  send_mut.unlock();
 
@@ -406,12 +464,16 @@ void XORMsg::latency_checker() {
                  }
 
                  // actually send the packet off
+                 DEBUG_PRINT("before sub.\n");
                  std::vector<XORProto*> xor_pkts = sub_encode(pkts, _symbols);
+                 DEBUG_PRINT("after sub.\n");
 
-                 const unsigned char *mh = pkts[0]->mh;
-                 const unsigned char *nh = pkts[1]->nh;
+                 const unsigned char *mh = pkts[0]->pkt->mac_header();
+                 const unsigned char *nh = pkts[0]->pkt->network_header();
 
+                 DEBUG_PRINT("before send.\n");
                  send_packets(xor_pkts, nh, mh, dst_host);
+                 DEBUG_PRINT("after send.\n");
 
             } else {
                 send_mut.unlock();
@@ -437,6 +499,7 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
         .read_mp("PURPOSE", function) // positional
         .read_mp("latency", latency) // positional
         .complete() < 0){
+            DEBUG_PRINT("Click configure failed.\n");
             return -1;
     }
 
@@ -450,6 +513,7 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
      */
     if (symbols < 3) {
         // print error
+        DEBUG_PRINT("Click configure: too few symbols.\n");
         return -1;
     }
 
@@ -457,37 +521,40 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     _function = function;
 
     if (latency <= 0) {
-        printf("max stray packet latency override to 100ms\n");
-        _latency = 100;
+        _disable_threads = true;
     } else {
+        _disable_threads = false;
         _latency = latency;
     }
 
+    DEBUG_PRINT("Click configure: lantency set: %lu ms.\n", _latency);
 
     // configure/initialize the bloom filter
     // filter is used for storing unique ids/symbols for xoring
     bloom_parameters parameters;
-    parameters.projected_element_count = ULLONG_MAX; // How many elements roughly do we expect to insert?
-    parameters.false_positive_probability = 0.0000001; // Maximum tolerable false positive probability? (0,1)
+
+    // Segfaults if we use UULONG_MAX as the count
+    //parameters.projected_element_count = ULLONG_MAX; // How many elements roughly do we expect to insert?
+    parameters.projected_element_count = 10000000; // How many elements roughly do we expect to insert?
+    parameters.false_positive_probability = 0.00001; // Maximum tolerable false positive probability? (0,1)
     parameters.random_seed = get_64_rand();
     parameters.compute_optimal_parameters();
     filter = bloom_filter(parameters);  //Instantiate Bloom Filter
 
-    // start pkt latency service
-    // ensure that 
-    std::thread listener(&XORMsg::latency_checker, this);
+    // TODO
+    if (! _disable_threads){
+        std::thread listener(&XORMsg::latency_checker, this);
+        listener.detach();
+    }
 
     return 0;
 }
-
 
 
 uint8_t get_8_rand() {
     std::uniform_int_distribution< uint8_t > uid(0, UCHAR_MAX);
     return uid(eng);
 }
-
-
 
 
 void XORMsg::encode(int ports, Packet *p) {
@@ -542,16 +609,15 @@ void XORMsg::encode(int ports, Packet *p) {
     // initial version of protocol
     int version = 0;
 
-    std::string pkt_data(reinterpret_cast<const char *>(p->data()), p->length());
-    //std::string pkt_data(const_cast<unsigned char*>(p->data()), p->length());
-    PacketData *pdd = new PacketData(pkt_data, get_48_rand(), std::chrono::high_resolution_clock::now());
-    pdd->SetHeaders(nh, mh);
+    PacketData *pdd = new PacketData(p, get_48_rand(), std::chrono::high_resolution_clock::now());
 
     // critical region, lock.
     send_mut.lock();
 
     // add to our bloom filter while in the lock
     filter.insert(pdd->id);
+
+    DEBUG_PRINT("encode: after bloom\n");
 
     // we have 1 packet, we want to see if we have another packet in the queue
     // if we do, great we can xor
@@ -563,31 +629,47 @@ void XORMsg::encode(int ports, Packet *p) {
 
     // queue does not have any elements for that host
     if (t == send_storage.end()) {
-        DEBUG_PRINT("adding: %llu\n", pdd->id);
+        DEBUG_PRINT("adding %llu: %lu\n", pdd->id, pdd->GetDataLength());
         send_storage[dst_host].push_back(pdd);
+        pkt_queue.push_back(std::make_tuple(dst_host, pdd->id, pdd->timestamp));
         send_mut.unlock();
         return;
     } else {
         std::vector<PacketData*> *host_map = &send_storage.at(dst_host);
         // queue is empty, so add this packet and wait for another to come along
-        DEBUG_PRINT("adding: %llu\n", pdd->id);
+        DEBUG_PRINT("adding %llu: %lu\n", pdd->id, pdd->GetDataLength());
         send_storage[dst_host].push_back(pdd);
+        pkt_queue.push_back(std::make_tuple(dst_host, pdd->id, pdd->timestamp));
 
         if (host_map->size() < _symbols) {
             send_mut.unlock();
             return;
         }
 
+        // if we get here, we have enough packets to handle.
+        // so we need to remove packets from pkt_queue (which handles threading)
+        DEBUG_PRINT("size1: %lu, size2: %lu\n", host_map->size(), pkt_queue.size());
         for (auto i = host_map->begin(); i != host_map->end(); ++i ) {
             pdv.push_back(*i);
-            //DEBUG_PRINT("removing: %llu\n", (*i)->id);
+
+            if (! _disable_threads) {
+                for (auto j = pkt_queue.begin(); j != pkt_queue.end(); ++j ) {
+                    DEBUG_PRINT("id1: %llu, id2: %llu\n", (*i)->id, std::get<1>(*j));
+                    if ((*i)->id == std::get<1>(*j)){
+                        DEBUG_PRINT("removing: %llu from pkt queue\n", (*i)->id);
+                        pkt_queue.erase(j);
+                    }
+                }
+            }
         }
 
     }
     send_mut.unlock();
     
+    DEBUG_PRINT("calling sub_encode\n");
     std::vector<XORProto*> pkts = sub_encode(pdv, _symbols);
 
+    DEBUG_PRINT("calling send_packets\n");
     send_packets(pkts, nh, mh, dst_host);
 
 }
@@ -728,9 +810,19 @@ void XORMsg::decode(int ports, Packet *p) {
         }
     }
 
+
     std::string xs = std::get<1>(x);
     std::string ys = std::get<1>(y);
     std::string zs = std::get<1>(z);
+
+    // TODO: we need a smart way, to check how the 3 packets are related by looking at packet
+    // header, and dropping the one that doesnt fit, or dropping all and starting over to
+    // avoid livelock
+    if ( xs.length() == 0 || ys.length() == 0 || zs.length() == 0 ) {
+        DEBUG_PRINT("we have 3 packets, but not all the codes to them\n");
+        return;
+    }
+
     // TODO: after confirmed correctness, reduce to single loop
 
     uint64_t long chunks = xs.length() >> 4ULL;
@@ -738,6 +830,7 @@ void XORMsg::decode(int ports, Packet *p) {
     // 6^7 // (b^c)^(a^b^c) // x^y
     char* aa = new char[xs.length()];
     std::string a;
+    //std::tuple<std::string, unsigned long long> a;
 
     auto aaa = solutions.find(a_id);
     if ( aaa == solutions.end() ) {
@@ -749,7 +842,7 @@ void XORMsg::decode(int ports, Packet *p) {
             _mm_storeu_si128 (((__m128i *)aa) + i, _mm_xor_si128 (xx, yy));
         }
         a = std::string(aa, xs.length());
-        //DEBUG_PRINT("a length: %lu, aa: %lu \n", a.length(), xs.length());
+        DEBUG_PRINT("a length: %lu, aa: %lu \n", a.length(), xs.length());
     } else {
         a = aa;
         DEBUG_PRINT("a used solution\n");
@@ -770,7 +863,7 @@ void XORMsg::decode(int ports, Packet *p) {
             _mm_storeu_si128 (((__m128i *)cc) + i, _mm_xor_si128 (xx, zz));
         }
         c = std::string(cc, zs.length());
-        //DEBUG_PRINT("c length: %lu, cc: %lu \n", c.length(), zs.length());
+        DEBUG_PRINT("c length: %lu, cc: %lu \n", c.length(), zs.length());
     } else {
         c = cc;
         DEBUG_PRINT("c used solution\n");
@@ -785,18 +878,23 @@ void XORMsg::decode(int ports, Packet *p) {
     if ( bbb == solutions.end() ) {
         for (int i = 0; i < chunks ; ++i){
             // load our packets into vectors
-            __m128i aa = _mm_loadu_si128 ((__m128i *)&aa + i);
+            //__m128i aa = _mm_loadu_si128 ((__m128i *)&aa + i);
+            __m128i xx = _mm_loadu_si128 (((__m128i *)xs.c_str()) + i);
+            __m128i yy = _mm_loadu_si128 (((__m128i *)ys.c_str()) + i);
             __m128i zz = _mm_loadu_si128 (((__m128i *)zs.c_str()) + i);
             // xor and our vector back into our xor data buffer
-            _mm_storeu_si128 (((__m128i *)bb) + i, _mm_xor_si128 (aa, zz));
+            //_mm_storeu_si128 (((__m128i *)bb) + i, _mm_xor_si128 (aa, zz));
+            _mm_storeu_si128 (((__m128i *)bb) + i, _mm_xor_si128 (xx, _mm_xor_si128 (yy, zz)));
         }
         b = std::string(bb, ys.length());
-        //DEBUG_PRINT("b length: %lu, bb: %lu \n", b.length(), ys.length());
+        DEBUG_PRINT("b length: %lu, bb: %lu\n", b.length(), ys.length());
     } else {
         b = bb;
         DEBUG_PRINT("b used solution\n");
     }
 
+
+    // TODO: sort out why not all 3 packets are being sent, and why they arent being sent consistently
 
     // only add a packet to sending out list if it has not already been added
     std::vector<std::string> deets;
@@ -804,39 +902,41 @@ void XORMsg::decode(int ports, Packet *p) {
     recv_mut.lock();
     auto a_solved = solutions.find(a_id);
     if (a_solved == solutions.end()) {
-        deets.push_back(a);
-        solutions[a_id] = a;
+        //solutions[a_id] = a;
     }
+    deets.push_back(a);
 
     auto b_solved = solutions.find(b_id);
     if (b_solved == solutions.end()) {
-        deets.push_back(b);
-        solutions[b_id] = b;
+        //solutions[b_id] = b;
     }
+    deets.push_back(b);
 
     auto c_solved = solutions.find(c_id);
     if (c_solved == solutions.end()) {
-        deets.push_back(c);
-        solutions[c_id] = c;
+        //solutions[c_id] = c;
     }
+    deets.push_back(c);
     recv_mut.unlock();
-
-    for (int i=0; i < a.length(); i++) {
-        DEBUG_PRINT("%x", a.c_str()[i]);
-    }
-    DEBUG_PRINT("\n");
 
 
     // add these solutions to memory (later put it in mem cache)
 
     for ( auto i : deets ) {
-        DEBUG_PRINT("orig packet len: %lu\n", i.length());
+        DEBUG_PRINT("padded packet len: %lu\n", i.length());
         WritablePacket *pkt = Packet::make(i.length());
         memcpy((void*)pkt->data(), i.c_str(), i.length());
 
         // set the original packet header information
-        pkt->set_mac_header(pkt->data());
-        pkt->set_network_header(pkt->data()+DEFAULT_MAC_LEN);
+        pkt->set_mac_header(pkt->data(), DEFAULT_MAC_LEN);
+        pkt->set_network_header(pkt->data()+DEFAULT_MAC_LEN, sizeof(click_ip));
+        const click_ip *iph = pkt->ip_header();
+        int ip_len = ntohs(iph->ip_len);
+        std::string src_host = std::string(IPAddress(iph->ip_src).unparse().mutable_c_str());
+        std::string dst_host = std::string(IPAddress(iph->ip_dst).unparse().mutable_c_str());
+
+        DEBUG_PRINT("orig packet: %s -> %s %d\n", src_host.c_str(), dst_host.c_str(), ip_len);
+        pkt->take(i.length()-(ip_len+DEFAULT_MAC_LEN));
 
         // add space at the front to put back on the old ip and mac headers
         // ip header first

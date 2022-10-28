@@ -18,22 +18,24 @@ CLICK_DECLS
 
 class PacketData{
     public:
-	const unsigned char *nh;
-	const unsigned char *mh;
-
-        std::string data;
+	Packet *pkt; // packet data itself
         unsigned long long id; // unique identifier
-
         std::chrono::high_resolution_clock::time_point timestamp;
+	std::string data;
 
         // constructors
         PacketData() {}
-        PacketData(std::string d, unsigned long long i, std::chrono::high_resolution_clock::time_point ts) : data(d), id(i), timestamp(ts) {}
+        PacketData(Packet *p, unsigned long long i, std::chrono::high_resolution_clock::time_point ts) : pkt(p), id(i), timestamp(ts) {
+            data = std::string(reinterpret_cast<const char *>(p->data()), p->length());
+	}
         ~PacketData();
 
-	void SetHeaders(const unsigned char *n, const unsigned char *m) {
-	    nh = n;
-	    mh = m;
+	std::string GetData() {
+            return data;
+	}
+
+	unsigned long GetDataLength() {
+            return data.length();
 	}
 };
 
@@ -57,6 +59,9 @@ class XORMsg : public Element {
     // latency for stray packets that dont have other packets
     // to XOR with
     unsigned long _latency;
+
+    // if the latency is 0, disable threading
+    bool _disable_threads;
 
     // unique identifiers for the xor'd packets
     uint64_t _sym_a;
