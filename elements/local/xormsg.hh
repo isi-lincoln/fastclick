@@ -8,6 +8,8 @@
 #include <tuple>
 
 #include <click/element.hh>
+#include <click/timer.hh>
+#include <click/task.hh>
 #include <clicknet/ether.h>
 #include <clicknet/udp.h>
 #include <include/click/packet.hh> // packet defn.
@@ -48,7 +50,6 @@ Generates a XOR Msg packet using an IPv4 packet as input.
 The input packet data must be a valid IPv4 packet.
 */
 class XORMsg : public Element {
-    uint8_t _ifaces; // number of links out
 
     // 0: encode, 1: decode
     uint8_t _function;
@@ -60,13 +61,14 @@ class XORMsg : public Element {
     // to XOR with
     unsigned long _latency;
 
+    // timer for each time check
+    unsigned long _timer;
+
+    // mtu of each link if known prior
+    unsigned long _mtu;
+
     // if the latency is 0, disable threading
     bool _disable_threads;
-
-    // unique identifiers for the xor'd packets
-    uint64_t _sym_a;
-    uint64_t _sym_b;
-
 
     public:
         XORMsg();
@@ -91,12 +93,29 @@ class XORMsg : public Element {
         void push(int port, Packet *p);
 
         // make these public functions to inherit members
-        void encode(int port, Packet *p);
-        void decode(int port, Packet *p);
+        //void encode(int port, Packet *p);
+        //void decode(int port, Packet *p);
+        void encode(int port, unsigned long longest, PacketBatch *pb);
+        void decode(int port, PacketBatch *pb);
         void forward(int port, Packet *p);
 
         void send_packets(std::vector<XORProto*> pkts, const unsigned char* nh, const unsigned char* mh, unsigned long dhost);
 	void latency_checker();
+
+	// for handling the multithreading / task management
+	bool run_task(Task *task);
+	// push but for batch operations
+	//void push_batch(int port, PacketBatch *p) override;
+
+    private:
+        class State {
+            public:
+                State() : dst_batch(0), timers(0) {};
+                std::unordered_map<uint32_t, PacketBatch* > dst_batch; 
+                Timer*  timers;
+        };
+
+        per_thread<State> _state;
 };
 
 
