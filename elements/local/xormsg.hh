@@ -49,6 +49,11 @@ Generates a XOR Msg packet using an IPv4 packet as input.
 =d
 The input packet data must be a valid IPv4 packet.
 */
+
+const unsigned func_encode = 0;
+const unsigned func_decode = 1;
+const unsigned func_forward = 2;
+
 class XORMsg : public Element {
 
     // 0: encode, 1: decode
@@ -110,8 +115,9 @@ class XORMsg : public Element {
     private:
         class State {
             public:
-                State() : dst_batch(0), timers(0) {};
-                std::unordered_map<uint32_t, PacketBatch* > dst_batch; 
+                State() : encode_batch(0), decode_batch(0), timers(0) {};
+                std::unordered_map<uint32_t, PacketBatch* > encode_batch; 
+                std::unordered_map<uint32_t, PacketBatch* > decode_batch; 
                 Timer*  timers;
         };
 
