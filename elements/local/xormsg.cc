@@ -40,6 +40,8 @@
 
 CLICK_DECLS
 
+#define IP_BYTE_OFF(iph)   ((ntohs((iph)->ip_off) & IP_OFFMASK) << 3)
+
 // globals
 // random number generation
 std::random_device r;
@@ -127,7 +129,8 @@ void XORMsg::send_packets(
 
         // these lines in overwritting the ip header are only needed when using Linux Forwarding.
         click_ip *iph2 = (click_ip *) ip_pkt->data();
-        iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)) );
+        //iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)) );
+        iph2->ip_len = htons( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)) );
 
         iph2->ip_p = 0;//144-252
         // update the ip header checksum for the next host in the path
@@ -634,12 +637,41 @@ void XORMsg::decode(int ports, PacketBatch *pb) {
             pkt->kill();
             continue;
         }
-        DEBUG_PRINT("orig packet: %s -> %s %d\n", src_host.c_str(), dst_host.c_str(), ip_len);
-        pkt->take(i.length()-(ip_len+DEFAULT_MAC_LEN));
+        DEBUG_PRINT("%s -> %s ip len: %d, data len: %lu\n", src_host.c_str(), dst_host.c_str(), ip_len, i.length());
+        DEBUG_PRINT("frag'd: %d\n", (iph->ip_off & htons(IP_MF)));
+
+
+        if (!IP_ISFRAG(iph)) {
+            // TODO
+            if (ip_len > i.length()) {
+            } else {
+                pkt->take(i.length()-(ip_len+DEFAULT_MAC_LEN));
+            }
+        } else {
+            /* From IP Reassembler element code */
+            // calculate packet edges
+            int p_off = IP_BYTE_OFF(iph);
+            int p_lastoff = p_off + ntohs(iph->ip_len) - (iph->ip_hl << 2);
+    
+            // check uncommon, but annoying, case: bad length, bad length + offset,
+            // or middle fragment length not a multiple of 8 bytes
+            if (p_lastoff > 0xFFFF || p_lastoff <= p_off
+                || ((p_lastoff & 7) != 0 && (iph->ip_off & htons(IP_MF)) != 0)
+                || i.length() < p_lastoff - p_off) {
+                pkt->kill();
+                return;
+            }
+            DEBUG_PRINT("taking: %d, final length: %ld\n", p_lastoff-p_off, (i.length() - (p_lastoff - p_off)));
+    
+            pkt->take(i.length() - (p_lastoff - p_off));
+        }
+        //pkt->take(i.length()-(ip_len+DEFAULT_MAC_LEN));
+
 
         // these lines in overwritting the ip header are only needed when using Linux Forwarding.
-        click_ip *iph3 = (click_ip *) pkt->data()+DEFAULT_MAC_LEN;
-        iph3->ip_len = ntohs( sizeof(click_ip) +  i.length());
+        //click_ip *iph3 = (click_ip *) pkt->data()+DEFAULT_MAC_LEN;
+        //iph3->ip_len = ntohs( sizeof(click_ip) +  i.length());
+        //iph3->ip_len = htons( sizeof(click_ip) +  i.length());
 
         // update the ip header checksum for the next host in the path
         ip_check(pkt);
