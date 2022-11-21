@@ -122,6 +122,7 @@ void XORMsg::send_packets(
     // TODO: this assumes a 1-1 matching between packets being XORd and interfaces
     unsigned iface_counter = 0;
     // now lets create the shares
+    //DEBUG_PRINT("send_pkts size: %lu\n", pkts.size());
     for (auto i: pkts) {
         //DEBUG_PRINT("port: %u -- out: %u, total size: %lu\n", iface_counter, i->Len, sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len));
         WritablePacket *pkt = Packet::make(i, (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)));
@@ -308,15 +309,20 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 
 
     if (latency >= 0) {
+
+        DEBUG_PRINT("cpus: %u\n", click_max_cpu_ids());
         //for (unsigned i = 0; i < click_max_cpu_ids(); i++) {
         for (unsigned i = 0; i < 1; i++) {
             State &s = _state.get_value_for_thread(i);
-            Task* task = new Task(this);
-            task->initialize(this,false);
-            task->move_thread(i);
+            s.tasks = new Task(this);
+            s.tasks->initialize(this,true);
+            s.tasks->move_thread(i);
+            /*
             s.timers = new Timer(task);
             s.timers->initialize(this);
             s.timers->move_thread(i);
+            s.timers->schedule_after(Timestamp::make_usec(_timer));
+            */
         }
         _disable_threads = false;
         _latency = latency;
@@ -356,6 +362,7 @@ void XORMsg::encode(int ports, unsigned long dst, PacketBatch *pb) {
 
     std::vector<unsigned long> lengths;
     Packet* ph = pb->first();
+    //DEBUG_PRINT("encode size: %u\n", pb->count());
     for (Packet* cp = pb->first(); cp != 0; cp = cp->next()) {
          // packet is too large
         if (cp->length() > XORPROTO_DATA_LEN) {
@@ -388,19 +395,16 @@ void XORMsg::encode(int ports, unsigned long dst, PacketBatch *pb) {
     // find smallest and longest sized packets, excluding 0 length if given
     unsigned long longest = *std::max_element(lengths.begin(), lengths.end());
 
-    //DEBUG_PRINT("in encode after saftey checks\n");
-
-    //DEBUG_PRINT("calling sub_encode\n");
-    std::vector<XORProto*> pkts = sub_encode(pb, _symbols, longest, _mtu);
-
-    //DEBUG_PRINT("calling send_packets\n");
-    send_packets(pkts, pb->first()->network_header(), pb->first()->mac_header(), dst);
+    std::vector<XORProto*> xor_pkts = sub_encode(pb, _symbols, longest, _mtu);
+    send_packets(xor_pkts, pb->first()->network_header(), pb->first()->mac_header(), dst);
 
     //DEBUG_PRINT("encoding packet(s) took: %s\n", (Timestamp::now_steady() - pb->first()->timestamp_anno()).unparse().c_str());
 
     // clear up data
-    pkts.clear(); // TODO
+    for (auto i: xor_pkts) { delete i; }
+    xor_pkts.clear(); // TODO
     pb->kill();
+    //DEBUG_PRINT("end encode\n");
 }
 
 
@@ -449,6 +453,7 @@ void matchBatch(PacketBatch **pb, PacketBatch **found, unsigned symbols, unsigne
 
     bool match = false;
     unsigned long long matched_symbols = 0;
+    //DEBUG_PRINT("mbat size: %lu\n", ids.size());
     for (auto it : ids) {
         // if we have enough symbols, we need to go back and remove them.
         if (it.second.size() == symbols) {
@@ -506,6 +511,8 @@ void XORMsg::decode(int ports, PacketBatch *pb) {
     Packet* ph = pb->first();
     unsigned char *nh;
     unsigned char *mh;
+
+    //DEBUG_PRINT("decode size: %u\n", pb->count());
     for (Packet* cp = pb->first(); cp != 0; cp = cp->next()) {
          // packet is too large
         if (cp->length() > XORPROTO_DATA_LEN) {
@@ -749,6 +756,8 @@ int XORMsg::initialize(ErrorHandler *errh) {
  * then send that out to each of the connected ports.
  */
 void XORMsg::push(int ports, Packet *p) {
+    //DEBUG_PRINT("push begin\n");
+
     // TODO: packet length bounds check.
     if (p->length() > 8000) {
         fprintf(stderr, "packet is too large for link");
@@ -812,9 +821,12 @@ void XORMsg::push(int ports, Packet *p) {
         // the next wake function to check the batch
         if (s.encode_batch[dst_host]->count() < _symbols) {
             // if we have passed in a timer value, then set the next wake up time
+            /*
             if (_timer >= 0) {
                 s.timers->schedule_after(Timestamp::make_usec(_timer));
             }
+            */
+            return;
         // if we have enough packets to do something
         } else {
             // take the packetbatch to send to functions
@@ -822,13 +834,17 @@ void XORMsg::push(int ports, Packet *p) {
             s.encode_batch.erase(dst_host);
 
             encode(ports, dst_host, pb);
+            //DEBUG_PRINT("post encode\n");
 
+            /*
             if (_timer >= 0) {
                 s.timers->unschedule();
             }
+            */
 
             // after we encode, kill all the packets in the batch
             pb->kill();
+            return;
         }
     } else if (_function == func_decode ) {
         auto sb = s.decode_batch.find(dst_host);
@@ -887,6 +903,7 @@ void XORMsg::push(int ports, Packet *p) {
 
 bool XORMsg::run_task(Task *task) {
     State &s = _state.get();
+    //DEBUG_PRINT("run_task begin\n");
 
     //DEBUG_PRINT("decode: %lu encode: %lu\n", s.decode_batch.size(), s.encode_batch.size());
     /*
@@ -907,6 +924,8 @@ bool XORMsg::run_task(Task *task) {
     */
 
     unsigned long longest = 0;
+    //DEBUG_PRINT("task encode size: %lu\n", s.encode_batch.size());
+    //DEBUG_PRINT("task decode size: %lu\n", s.decode_batch.size());
     for (std::unordered_map<uint32_t, PacketBatch*>::iterator i = s.encode_batch.begin(); i != s.encode_batch.end(); ) {
         unsigned long dst_host = i->first;
         PacketBatch* pb = i->second;
@@ -960,7 +979,8 @@ bool XORMsg::run_task(Task *task) {
 
         if (pb->count() != _symbols) {
             DEBUG_PRINT("task: not enough packets\n");
-            s.timers->schedule_after(Timestamp::make_usec(_timer));
+            //s.timers->schedule_after(Timestamp::make_usec(_timer));
+            s.tasks->fast_reschedule();
             return false;
         }
 
@@ -969,11 +989,14 @@ bool XORMsg::run_task(Task *task) {
 
         std::vector<XORProto*> xor_pkts = sub_encode(pb, _symbols, longest, _mtu);
         send_packets(xor_pkts, pb->first()->network_header(), pb->first()->mac_header(), dst_host);
-
+        
+        for (auto i: xor_pkts) { delete i; }
         xor_pkts.clear();
         pb->kill();
     }
-    s.timers->schedule_after(Timestamp::make_usec(_timer));
+    //s.timers->schedule_after(Timestamp::make_usec(_timer));
+    s.tasks->fast_reschedule();
+    //DEBUG_PRINT("after run_task schedule\n");
 
     return true;
 }

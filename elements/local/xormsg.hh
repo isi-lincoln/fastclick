@@ -115,10 +115,12 @@ class XORMsg : public Element {
     private:
         class State {
             public:
-                State() : encode_batch(0), decode_batch(0), timers(0) {};
+                //State() : encode_batch(0), decode_batch(0), timers(0) {};
+                State() : encode_batch(0), decode_batch(0), tasks(0) {};
                 std::unordered_map<uint32_t, PacketBatch* > encode_batch; 
                 std::unordered_map<uint32_t, PacketBatch* > decode_batch; 
-                Timer*  timers;
+                //Timer*  timers;
+                Task*  tasks;
         };
 
         per_thread<State> _state;
