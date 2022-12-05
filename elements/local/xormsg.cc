@@ -307,11 +307,14 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     _symbols = symbols;
     _function = function;
 
+    // TODO
+    _threads = click_max_cpu_ids();
+
 
     if (_latency > 0) {
         DEBUG_PRINT("cpus: %u\n", click_max_cpu_ids());
-        //for (unsigned i = 0; i < click_max_cpu_ids(); i++) {
-        for (unsigned i = 0; i < 1; i++) {
+        for (unsigned i = 0; i < click_max_cpu_ids(); i++) {
+        //for (unsigned i = 0; i < 1; i++) {
             State &s = _state.get_value_for_thread(i);
             s.tasks = new Task(this);
             s.tasks->initialize(this,true);
@@ -435,12 +438,8 @@ void matchBatch(PacketBatch **pb, PacketBatch **found, unsigned symbols, unsigne
         // this may be too expensive to copy packets out, and may need to move it so we only do it when required.
         if ( iid == ids.end() ) {
             ids[clusterid] = std::vector<Packet*>{cp};
-            //ids[clusterid] = std::vector<Packet*>{cp->clone()};
-            //ids[clusterid] = std::vector<Packet*>{cp->uniqueify()};
         } else {
             ids[clusterid].push_back(cp);
-            //ids[clusterid].push_back(cp->clone());
-            //ids[clusterid].push_back(cp->uniqueify());
         }
     }
 
@@ -739,6 +738,34 @@ int XORMsg::initialize(ErrorHandler *errh) {
     return 0;
 }
 
+/*
+PacketBatch* XORMsg::get_all_encode_pkts(unsigned long dst, uint8_t symbols) {
+    PacketBatch* pb = new PacketBatch;
+    pb = 0;
+    for (int i = 0; i < _threads; i++){
+	State &s = _state.get_value_for_thread(i);
+	s.lock.acquire();
+
+        auto sb = s.encode_batch.find(dst_host);
+        if ( sb != s.encode_batch.end() ) {
+	    if ( pb != 0) {
+	        pb.append_batch(s.encode_batch.at(dst_host));
+	    } else {
+                pb = s.encode_batch.at(dst_host);
+	    }
+	}
+	s.lock.release();
+    }
+
+    if ( pb->count < symbols || pb == 0){
+        delete pb;
+	return 0;
+    }
+
+    return pb;
+}
+*/
+
 
 /*
  * Generates a XORMsg packet from a packet.
@@ -749,7 +776,7 @@ int XORMsg::initialize(ErrorHandler *errh) {
  * then send that out to each of the connected ports.
  */
 void XORMsg::push(int ports, Packet *p) {
-    DEBUG_PRINT("push pkt length: %d\n", p->length());
+    //DEBUG_PRINT("push pkt length: %d\n", p->length());
 
     // TODO: packet length bounds check.
     if (p->length() > 8000) {
@@ -799,26 +826,36 @@ void XORMsg::push(int ports, Packet *p) {
     unsigned long dst_host = IPAddress(iph->ip_dst.s_addr);
 
     // get the state for this thread ( packet batches)
-    State &s = _state.get();
+    //State &s = _state.get(); // 2
 
     // we have to approach this differently depending on which
     // function is calling push
     
     if (_function == func_encode) {
+	elock.acquire();
+
         // if there is already a packet in the batch, append this one
-        auto sb = s.encode_batch.find(dst_host);
-        if ( sb != s.encode_batch.end() ) {
+        //auto sb = s.encode_batch.find(dst_host);
+        //if ( sb != s.encode_batch.end() ) {
+
+        auto sb = ebatch.find(dst_host);
+        if ( sb != ebatch.end() ) {
             PacketBatch* pb = sb->second;
             pb->append_packet(p);
         // if the current batch is empty, create a new batch
         } else {
-            s.encode_batch[dst_host] = PacketBatch::make_from_packet(p);
+            //s.encode_batch[dst_host] = PacketBatch::make_from_packet(p);
+            ebatch[dst_host] = PacketBatch::make_from_packet(p);
+	    elock.release();
+	    return;
         }
 
         // if we dont have enough packets to do any encoding, schedule
         // the next wake function to check the batch
-        if (s.encode_batch[dst_host]->count() < _symbols) {
-	    DEBUG_PRINT("have %d packets\n", s.encode_batch[dst_host]->count())
+        //if (s.encode_batch[dst_host]->count() < _symbols) {
+        if (ebatch[dst_host]->count() < _symbols) {
+	    elock.release();
+	    //DEBUG_PRINT("have %d packets\n", s.encode_batch[dst_host]->count())
             // if we have passed in a timer value, then set the next wake up time
             /*
             if (_timer >= 0) {
@@ -829,8 +866,12 @@ void XORMsg::push(int ports, Packet *p) {
         // if we have enough packets to do something
         } else {
             // take the packetbatch to send to functions
-            PacketBatch* pb = s.encode_batch.at(dst_host);
-            s.encode_batch.erase(dst_host);
+            //PacketBatch* pb = s.encode_batch.at(dst_host);
+            //s.encode_batch.erase(dst_host);
+
+            PacketBatch* pb = ebatch.at(dst_host);
+            ebatch.erase(dst_host);
+	    elock.release();
 
             encode(ports, dst_host, pb);
             //DEBUG_PRINT("post encode\n");
@@ -847,47 +888,58 @@ void XORMsg::push(int ports, Packet *p) {
         }
     } else if (_function == func_decode ) {
 	//DEBUG_PRINT("decode recv'd pkt length: %d\n", p->length());
-        auto sb = s.decode_batch.find(dst_host);
-        if ( sb != s.decode_batch.end() ) {
+        //auto sb = s.decode_batch.find(dst_host);
+        //if ( sb != s.decode_batch.end() ) {
+	dlock.acquire();
+        auto sb = dbatch.find(dst_host);
+        if ( sb != dbatch.end() ) {
             PacketBatch* pb = sb->second;
             pb->append_packet(p);
         // if the current batch is empty, create a new batch
         } else {
-            s.decode_batch[dst_host] = PacketBatch::make_from_packet(p);
+            //s.decode_batch[dst_host] = PacketBatch::make_from_packet(p);
+            dbatch[dst_host] = PacketBatch::make_from_packet(p);
+	    dlock.release();
+	    return;
         }
 
-        if (s.decode_batch[dst_host]->count() < _symbols) {
+        //if (s.decode_batch[dst_host]->count() < _symbols) {
+        if (dbatch[dst_host]->count() < _symbols) {
             // nothing we can do but wait for more symbols to come in
+	    dlock.release();
             return;
         } else {
-            PacketBatch* pb = s.decode_batch.at(dst_host);
+            //PacketBatch* pb = s.decode_batch.at(dst_host);
+            PacketBatch* pb = dbatch.at(dst_host);
+	    dlock.release();
 
             // on decode it is possible that we get xor'd packets in other windows
             // so we need to make sure we handle those appropriately
             // return a packetbatch only if they all have matching ids and enough symbols
             
-
             PacketBatch* found = 0;
             matchBatch(&pb, &found, _symbols, _latency);
+
+	    dlock.acquire();
             if (!pb) {
-                s.decode_batch.erase(dst_host);
+                //s.decode_batch.erase(dst_host);
+                dbatch.erase(dst_host);
             } else {
                 if (pb->count() != 0) {
                     // update the dst_host with this pair set
-                    s.decode_batch[dst_host] = pb;
+                    //s.decode_batch[dst_host] = pb;
+                    dbatch[dst_host] = pb;
                 } else {
-                    s.decode_batch.erase(dst_host);
+                    //s.decode_batch.erase(dst_host);
+                    dbatch.erase(dst_host);
                 }
             }
+	    dlock.release();
+
             if (found) {
                 decode(ports, found);
                 found->kill(); // TODO
-                //found = 0; // TODO
             }
-            /*
-            s.decode_batch.erase(dst_host);
-            decode(ports, pb);
-            */
             
         }
     } else if (_function == func_forward ) {
@@ -901,27 +953,12 @@ void XORMsg::push(int ports, Packet *p) {
     return;
 }
 
+bool XORMsg::run_task(Task *task) { return false;}
+/*
 bool XORMsg::run_task(Task *task) {
-    State &s = _state.get();
+    State &s = _state.get();   // 1
+    //s.lock();
     //DEBUG_PRINT("run_task begin\n");
-
-    //DEBUG_PRINT("decode: %lu encode: %lu\n", s.decode_batch.size(), s.encode_batch.size());
-    /*
-    DEBUG_PRINT("in task: size of decode-batch: %lu\n", s.decode_batch.size());
-    // clean up our decode queues
-    for (std::unordered_map<uint32_t, PacketBatch*>::iterator j = s.decode_batch.begin(); j != s.decode_batch.end(); ) {
-        unsigned long dst_host = j->first;
-        PacketBatch* pb = j->second;
-
-        Timestamp now = Timestamp::now_steady();
-        Timestamp ts_pkt = pb->first()->timestamp_anno();
-        // if we are 2x over the latency, delete the elements
-        if (Timestamp::now_steady()  >  (ts_pkt + Timestamp::make_msec(_latency*2))) {
-            pb->kill();
-            s.decode_batch.erase(j);
-        }
-    }
-    */
 
     unsigned long longest = 0;
     //DEBUG_PRINT("task encode size: %lu\n", s.encode_batch.size());
@@ -1000,6 +1037,7 @@ bool XORMsg::run_task(Task *task) {
 
     return true;
 }
+*/
 
 
 CLICK_ENDDECLS

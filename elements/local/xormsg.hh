@@ -75,16 +75,21 @@ class XORMsg : public Element {
     // if the latency is 0, disable threading
     bool _disable_threads;
 
+    // threads
+    unsigned _threads;
+
     public:
         XORMsg();
         ~XORMsg();
 
         std::unordered_map<uint32_t, std::vector<PacketData*> > send_storage; 
         std::unordered_map<uint64_t, std::vector<std::tuple<uint8_t, std::string, unsigned long long> > > recv_storage;
-        std::unordered_map<uint64_t, std::string> solutions;
+        Spinlock elock;
+        Spinlock dlock;
+        std::unordered_map<uint32_t, PacketBatch* > ebatch; 
+        std::unordered_map<uint32_t, PacketBatch* > dbatch; 
 
-        std::mutex send_mut; // mutex for critical section
-        std::mutex recv_mut; // mutex for critical section
+        std::unordered_map<uint64_t, std::string> solutions;
 
         const char *class_name() const { return "XORMsg"; }
         const char *port_count() const { return "1-/1-"; } // depending on directionality, 1/3+ or 3+/1
@@ -121,6 +126,7 @@ class XORMsg : public Element {
                 std::unordered_map<uint32_t, PacketBatch* > decode_batch; 
                 //Timer*  timers;
                 Task*  tasks;
+
         };
 
         per_thread<State> _state;
