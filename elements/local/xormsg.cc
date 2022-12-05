@@ -1,6 +1,6 @@
 #define DEBUG 1
 #ifdef DEBUG
-#define DEBUG_PRINT(fmt, args...)    fprintf(stdout, fmt, ## args)
+#define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
 #define DEBUG_PRINT(fmt, args...)
 #endif
@@ -308,8 +308,7 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     _function = function;
 
 
-    if (latency >= 0) {
-
+    if (_latency > 0) {
         DEBUG_PRINT("cpus: %u\n", click_max_cpu_ids());
         //for (unsigned i = 0; i < click_max_cpu_ids(); i++) {
         for (unsigned i = 0; i < 1; i++) {
@@ -317,20 +316,14 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
             s.tasks = new Task(this);
             s.tasks->initialize(this,true);
             s.tasks->move_thread(i);
-            /*
-            s.timers = new Timer(task);
-            s.timers->initialize(this);
-            s.timers->move_thread(i);
-            s.timers->schedule_after(Timestamp::make_usec(_timer));
-            */
         }
         _disable_threads = false;
-        _latency = latency;
     } else {
         _disable_threads = true;
     }
 
-    DEBUG_PRINT("Click configure: lantency set: %lu ms.\n", _latency);
+    DEBUG_PRINT("Click: lantency set: %lu ms.\n", _latency);
+    DEBUG_PRINT("Click: threads enabled: %s\n", !_disable_threads ? "true" : "false");
 
     // configure/initialize the bloom filter
     // filter is used for storing unique ids/symbols for xoring
@@ -512,7 +505,7 @@ void XORMsg::decode(int ports, PacketBatch *pb) {
     unsigned char *nh;
     unsigned char *mh;
 
-    //DEBUG_PRINT("decode size: %u\n", pb->count());
+    // DEBUG_PRINT("decode size: %u, pkt size: %d\n", pb->count(), pb->first()->length());
     for (Packet* cp = pb->first(); cp != 0; cp = cp->next()) {
          // packet is too large
         if (cp->length() > XORPROTO_DATA_LEN) {
@@ -756,26 +749,29 @@ int XORMsg::initialize(ErrorHandler *errh) {
  * then send that out to each of the connected ports.
  */
 void XORMsg::push(int ports, Packet *p) {
-    //DEBUG_PRINT("push begin\n");
+    DEBUG_PRINT("push pkt length: %d\n", p->length());
 
     // TODO: packet length bounds check.
     if (p->length() > 8000) {
-        fprintf(stderr, "packet is too large for link");
+        fprintf(stderr, "packet is too large for link\n");
         p->kill();
         return;
     }
+    //DEBUG_PRINT("1\n");
     if (p->length() > XORPROTO_DATA_LEN) {
         fprintf(stderr, "packet length too large for xor function\n");
         p->kill();
         return;
     }
 
+    //DEBUG_PRINT("2\n");
     // saftey checks
     if (!p->has_mac_header()) {
         fprintf(stderr, "xor doesnt know how to handle this packet (no L2).\n");
         p->kill();
         return;
     }
+    //DEBUG_PRINT("3\n");
 
     // annotate this packet with the current time (time monotonomically increating)
     // we'll use this in our Task function to check if we need to send the packet
@@ -790,12 +786,14 @@ void XORMsg::push(int ports, Packet *p) {
         p->kill();
         return;
     }
+    //DEBUG_PRINT("5\n");
 
     if (!p->has_network_header()) {
         fprintf(stderr, "xor doesnt know how to handle this packet (no L3).\n");
         p->kill();
         return;
     }
+    //DEBUG_PRINT("6\n");
 
     const click_ip *iph = p->ip_header();
     unsigned long dst_host = IPAddress(iph->ip_dst.s_addr);
@@ -805,7 +803,7 @@ void XORMsg::push(int ports, Packet *p) {
 
     // we have to approach this differently depending on which
     // function is calling push
-    //
+    
     if (_function == func_encode) {
         // if there is already a packet in the batch, append this one
         auto sb = s.encode_batch.find(dst_host);
@@ -820,6 +818,7 @@ void XORMsg::push(int ports, Packet *p) {
         // if we dont have enough packets to do any encoding, schedule
         // the next wake function to check the batch
         if (s.encode_batch[dst_host]->count() < _symbols) {
+	    DEBUG_PRINT("have %d packets\n", s.encode_batch[dst_host]->count())
             // if we have passed in a timer value, then set the next wake up time
             /*
             if (_timer >= 0) {
@@ -847,6 +846,7 @@ void XORMsg::push(int ports, Packet *p) {
             return;
         }
     } else if (_function == func_decode ) {
+	//DEBUG_PRINT("decode recv'd pkt length: %d\n", p->length());
         auto sb = s.decode_batch.find(dst_host);
         if ( sb != s.decode_batch.end() ) {
             PacketBatch* pb = sb->second;
