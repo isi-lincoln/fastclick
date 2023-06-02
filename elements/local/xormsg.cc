@@ -36,7 +36,6 @@
 // protocol files
 #include "xorproto.hh"
 #include "xormsg.hh"
-#include "helper.hh"
 //#include "bloom/bloom_filter.hpp"
 
 CLICK_DECLS

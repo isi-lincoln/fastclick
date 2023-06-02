@@ -38,7 +38,6 @@
 // protocol files
 #include "sssproto.hh"
 #include "sssmsg.hh"
-#include "helper.hh"
 
 /*****   THIS IS END CRYPTO SECTION *****/
 
