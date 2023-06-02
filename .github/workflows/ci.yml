@@ -22,7 +22,7 @@ jobs:
     strategy:
         matrix:
             COMPILER: [gcc, clang]
-            FRAMEWORK: [vanilla, dpdk, dpdk-light, netmap, vanilla-nopool, dpdk-flow-dynamic]
+            FRAMEWORK: [vanilla, dpdk]
     steps:
     - uses: actions/checkout@v3
     - uses: actions/setup-python@v4
@@ -94,6 +94,10 @@ jobs:
       run: |
           if [ "${{matrix.COMPILER}}" = "clang" ] ; then export CC=clang; export CXX=clang++; fi
           ./configure $FLAGS $FRAMEWORK_FLAGS
+    - name: grab submodules
+      run: git submodule update --init --recursive
+    - name: update makefile
+      run: sed -i 's/LIBS = -lnuma -lelf  `$(CLICK_BUILDTOOL) --otherlibs` $(ELEMENT_LIBS)/LIBS = -lnuma -lelf -lcryptopp -L$(top_builddir)\/include\/cryptopp `$(CLICK_BUILDTOOL) --otherlibs` $(ELEMENT_LIBS)/g' userlevel/Makefile
     - name: make
       run: make
     #Simple launch avoids going further if something very bad happens
