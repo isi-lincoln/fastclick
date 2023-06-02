@@ -8,7 +8,6 @@ CLICK_DECLS
 
 #ifdef HAVE_FLOW
 
-
 #define DEBUG_CLASSIFIER_MATCH 0 //0 no, 1 build-time only, 2 whole time, 3 print table after each dup
 #define DEBUG_CLASSIFIER_RELEASE 0
 #define DEBUG_CLASSIFIER_TIMEOUT 0
@@ -41,8 +40,6 @@ CLICK_DECLS
     #define flow_assert(...)
 	#define FLOW_INDEX(table,index) table.unchecked_at(index)
 #endif
-
-#define HAVE_DYNAMIC_FLOW_RELEASE_FNT HAVE_DYNAMIC_FLOW
 
 class FlowControlBlock;
 class FCBPool;
@@ -97,7 +94,7 @@ union FlowNodeData{
 
 typedef void (*SubFlowRealeaseFnt)(FlowControlBlock* fcb, void* thunk);
 
-#if HAVE_DYNAMIC_FLOW_RELEASE_FNT
+#if HAVE_FLOW_DYNAMIC
 struct FlowReleaseChain {
     SubFlowRealeaseFnt previous_fnt;
     void* previous_thunk;
@@ -124,11 +121,13 @@ private:
 #endif
         Timestamp lastseen; //Last seen is also used without sloppy timeout for cache purposes
 
-#if HAVE_FLOW_RELEASE_SLOPPY_TIMEOUT
-		//#define FLOW_RELEASE			  0x01 //Release me when you got free time, my packets will never arrive again
-		//#define FLOW_PERMANENT 			  0x02 //Never release
+#if HAVE_CTX_GLOBAL_TIMEOUT
+        /**
+         * If FLOW_TIMEOUT is set, an element has asked this flow to be put in the timer "list" (flows without active reference but not freed)
+         * only CTXManager will look for this.
+         */
         //0x20 is reserved, see below
-        #define FLOW_TIMEOUT_INLIST       0x40 //Timeout is already in list
+        #define FLOW_TIMEOUT_INLIST       0x40 //Timeout is already in release list
 		#define FLOW_TIMEOUT              0x80 //Timeout set
         #define FLOW_TIMEOUT_SHIFT           8
 		#define FLOW_TIMEOUT_MASK   0x000000ff //Delta + lastseen timestamp in msec
@@ -161,7 +160,7 @@ private:
 
 
 
-#if HAVE_DYNAMIC_FLOW_RELEASE_FNT
+#if HAVE_FLOW_DYNAMIC
 		SubFlowRealeaseFnt release_fnt ;
 		void* thunk;
 #endif
@@ -189,11 +188,11 @@ private:
 #if DEBUG_CLASSIFIER
             thread = -1;
 #endif
-#if HAVE_DYNAMIC_FLOW_RELEASE_FNT
+#if HAVE_FLOW_DYNAMIC
             release_fnt = 0;
             thunk = 0;
 #endif
-#if HAVE_FLOW_RELEASE_SLOPPY_TIMEOUT
+#if HAVE_CTX_GLOBAL_TIMEOUT
 			next = 0; //TODO : only once?
 #endif
 		}
@@ -341,7 +340,7 @@ private:
 	inline FlowControlBlock* alloc_new() {
 		FlowControlBlock* fcb = (FlowControlBlock*)CLICK_LALLOC(sizeof(FlowControlBlock) + _data_size);
 		flow_assert(fcb);
-/*#if HAVE_DYNAMIC_FLOW_RELEASE_FNT
+/*#if HAVE_FLOW_DYNAMIC
 		fcb->release_fnt = &pool_release_fnt;
 		fcb->thunk = this;
 #endif*/
@@ -455,7 +454,7 @@ public:
     }
 
 
-#if HAVE_FLOW_RELEASE_SLOPPY_TIMEOUT
+#if HAVE_CTX_GLOBAL_TIMEOUT
     void delete_all_flows();
 #endif
     void set_release_fnt(SubFlowRealeaseFnt pool_release_fnt, void* thunk);
@@ -467,7 +466,7 @@ public:
         _pool.release(fcb); //Release the FCB itself inside the pool
     }
 
-#if HAVE_FLOW_RELEASE_SLOPPY_TIMEOUT
+#if HAVE_CTX_GLOBAL_TIMEOUT
     void release_later(FlowControlBlock* fcb);
     bool check_release();
     struct fcb_list {
@@ -523,11 +522,11 @@ protected:
 };
 
 
-//#if !HAVE_DYNAMIC_FLOW_RELEASE_FNT
+//#if !HAVE_FLOW_DYNAMIC
 extern __thread FlowTableHolder* fcb_table;
 //#endif
 
-/*#if HAVE_DYNAMIC_FLOW_RELEASE_FNT
+/*#if HAVE_FLOW_DYNAMIC
         inline FCBPool* FlowControlBlock::get_pool() const { //Only works at initialisation
             return static_cast<FCBPool*>(thunk);
         }
@@ -552,13 +551,13 @@ extern __thread FlowTableHolder* fcb_table;
 }
 
 inline void FlowControlBlock::_do_release() {
-#if DEBUG_CLASSIFIER && HAVE_FLOW_RELEASE_SLOPPY_TIMEOUT
+#if DEBUG_CLASSIFIER && HAVE_CTX_GLOBAL_TIMEOUT
     flow_assert(!(flags & FLOW_TIMEOUT_INLIST));
 #endif
     flow_assert(thread == click_current_cpu_id());
     //click_chatter("Release fnt is %p",release_fnt);
     SFCB_STACK(
-#if HAVE_DYNAMIC_FLOW_RELEASE_FNT
+#if HAVE_FLOW_DYNAMIC
        if (release_fnt)
            release_fnt(this, thunk);
 #endif
@@ -585,7 +584,7 @@ inline void FlowControlBlock::release(int packets_nr) {
 	if (use_count == 0) {
 	    debug_flow_2("[%d] Release fcb %p, uc 0, hc %d",click_current_cpu_id(), this,hasTimeout());
 		//assert(this->hasTimeout());
-#if HAVE_FLOW_RELEASE_SLOPPY_TIMEOUT
+#if HAVE_CTX_GLOBAL_TIMEOUT
 	    if (this->hasTimeout()) {
 	        if (this->flags & FLOW_TIMEOUT_INLIST) {
 #if DEBUG_CLASSIFIER_TIMEOUT > 2

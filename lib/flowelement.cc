@@ -330,6 +330,11 @@ void VirtualFlowManager::_build_fcb(int verbose, bool _ordered) {
             if (ptr->second.second < _entries[i]->_reachable_list[j].second) {
                 ptr->second.second = _entries[i]->_reachable_list[j].second;
             }
+#if HAVE_FLOW_DYNAMIC
+            //Set unstack before non-compatible element
+            UnstackVisitor uv = UnstackVisitor();
+            router->visit_ports(_entries[i], true, -1, &uv);
+#endif
         }
     }
 
@@ -352,7 +357,7 @@ void VirtualFlowManager::_build_fcb(int verbose, bool _ordered) {
         int my_place;
         int min_place = 0;
 
-        //We need to verify the reserved space for all possible CTXManager
+        //We need to verify the reserved space for all possible VirtualFlowManager
         for (int i = 0; i < _entries.size(); i++) {
             VirtualFlowManager* fc = dynamic_cast<VirtualFlowManager*>(_entries[i]);
             //If this flow manager can reach the element, then we need to have enough reserved space
@@ -409,6 +414,7 @@ void VirtualFlowManager::_build_fcb(int verbose, bool _ordered) {
             int tot = vfe->flow_data_offset() + vfe->flow_data_size();
             if (tot > fc->_reserve)
                 fc->_reserve = tot;
+            vfe->flow_announce_manager(_entries[i], ErrorHandler::default_handler());
         }
         fc->fcb_built();
     }
@@ -448,7 +454,33 @@ CounterInitFuture::completed(ErrorHandler* errh) {
     return InitFuture::completed(errh);
 }
 
+#if HAVE_FLOW_DYNAMIC
+bool UnstackVisitor::visit(Element *e, bool isoutput, int port,
+                   Element *from_e, int from_port, int distance) {
+    FlowElement* fe = dynamic_cast<FlowElement*>(e);
 
+    if (fe && fe->stopClassifier())
+        return false;
+
+    VirtualFlowSpaceElement* fbe = dynamic_cast<VirtualFlowSpaceElement*>(e);
+
+    if (fbe == NULL) {
+        const char *f = e->router()->flow_code_override(e->eindex());
+        if (!f)
+            f = e->flow_code();
+        if (strcmp(f,Element::COMPLETE_FLOW) != 0) {
+#if DEBUG_CLASSIFIER > 0
+            click_chatter("%p{element}: Unstacking flows from port %d", e,
+port);
+#endif
+            const_cast<Element::Port&>(from_e->port(true,from_port)).set_unstack(true);
+            return false;
+        }
+    }
+
+    return true;
+}
+#endif
 
 #endif
 CLICK_ENDDECLS

@@ -67,6 +67,12 @@ int main(int argc, char **argv) {
 
   getcwd(pwd, 256);
   chdir(CLICK_DIR "/userlevel/");
+
+  if (!args.router_file) {
+    click_chatter("No configuration was specified !");
+    return -EINVAL;
+  }
+
   if (args.router_file[0] == '/') {
       strncpy(cpath, args.router_file, 256);
   } else {
@@ -92,9 +98,9 @@ int main(int argc, char **argv) {
       click_chatter("Applying -O3 optimizations");
       exec("opt -S -O3 embedclick.ll -o embedclick.ll");
       exec("make embedclick-opt");
-      argv[0] = "./embedclick-opt";
+      argv[0] = (char*)"./embedclick-opt";
     } else {
-      argv[0] = "./embedclick";
+      argv[0] = (char*)"./embedclick";
     }
   #else
     perfalert("Skipping IR optimizations, as LLVM libraries could not be found!");
@@ -108,7 +114,15 @@ int main(int argc, char **argv) {
   /* Hint to NPF Packet Generator */
   click_chatter("EVENT COMPILED");
   chdir(pwd);
+  int retryv = 0;
+retry:
   execvp(argv[0], argv);
+  if (errno == 2 && retryv == 0) {
+      retryv++;
+      chdir((char*) CLICK_DIR "/userlevel/");
+      goto retry;
+  }
+  click_chatter("Could not execute embedclick: errno %d (%s)", errno, strerror(errno));
 #pragma GCC diagnostic pop
-  return 0;
+  return -1;
 }

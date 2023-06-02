@@ -95,9 +95,17 @@ CLICK_DECLS
     EXECUTE_FOR_EACH_PACKET_UNTIL_DO(fnt, batch, [](PacketBatch*& batch, Packet* dropped, Packet* next){ if (!next) return; PacketBatch* remain = PacketBatch::make_from_simple_list(next);batch->set_count(batch->count() - remain->count()); batch->set_tail(dropped); dropped->set_next(0); remain->kill(); })
 
 /**
- * Execute a function on each packet of a batch. The function may return
+ * Execute a function on each packet of a batch.
+ * The batch will be modified in-place according to the output of the function.
+ *
+ * The function may return
  * another packet and which case the packet of the batch will be replaced by
  * that one, or null if the packet is to be dropped.
+ *
+ * If all packets are dropped, batch will become null. If the first packets are dropped, the address of batch will change.
+ *
+ *
+ * Example: EXECUTE_FOR_EACH_PACKET_DROPPABLE([this](Packet* p){return p->push(_nbytes);},batch,[](Packet* p){})
  */
 #define EXECUTE_FOR_EACH_PACKET_DROPPABLE(fnt,batch,on_drop) {\
                 Packet* efepd_next = ((batch != 0)? batch->first()->next() : 0 );\
@@ -337,8 +345,8 @@ CLICK_DECLS
  */
 #define MAKE_BATCH(fnt,head,max) {\
         head = PacketBatch::start_head(fnt);\
-        Packet* last = head->first();\
         if (head != 0) {\
+            Packet* last = head->first();\
             unsigned int count = 1;\
             while (count < (unsigned)(max>0?max:BATCH_MAX_PULL)) {\
                 Packet* current = fnt;\
@@ -349,7 +357,7 @@ CLICK_DECLS
                 count++;\
             }\
             head->make_tail(last,count);\
-        } else head = 0;\
+        }\
 }
 
 /**
@@ -439,6 +447,7 @@ public :
      *
      * Creates a new batch, with @a p as the first packet. Batch is *NOT* valid
      *  until you call make_tail().
+     * If the Packet is null, returns no batch.
      */
     inline static PacketBatch* start_head(Packet* p) {
         return reinterpret_cast<PacketBatch*>(p);
@@ -540,6 +549,12 @@ public :
         second->set_count(total_count - first_batch_count);
 
         set_count(first_batch_count);
+    }
+
+    inline PacketBatch* split(int first_batch_count) {
+                PacketBatch* second;
+                split(first_batch_count,second, false);
+                return second;
     }
 
     /**

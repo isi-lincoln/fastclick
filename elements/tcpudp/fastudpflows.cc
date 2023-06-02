@@ -72,6 +72,7 @@ FastUDPFlows::configure(Vector<String> &conf, ErrorHandler *errh)
         .read_or_set("FLOWBURST", _flowburst, 1)
         .read_or_set("CHECKSUM", _cksum, true)
         .read_or_set("SEQUENTIAL", _sequential, false)
+        .read_or_set("DUPLICATE", _duplicate, false )
         .read_or_set("ACTIVE", _active, true)
         .read_or_set("STOP", _stop, false)
         .complete() < 0)
@@ -112,7 +113,7 @@ FastUDPFlows::change_ports(int flow)
 }
 
 Packet *
-FastUDPFlows::get_packet()
+FastUDPFlows::gen_packet()
 {
     int flow;
     if (_last_flow->burst_count++ < _flowburst) {
@@ -128,7 +129,10 @@ FastUDPFlows::get_packet()
     }
     _flows[flow].flow_count++;
 
-    return _flows[flow].packet->clone();
+    if (_duplicate)
+        return _flows[flow].packet->duplicate();
+    else
+        return _flows[flow].packet->clone();
 }
 
 int
@@ -194,11 +198,14 @@ FastUDPFlows::run_timer(Timer*) {
 
 bool
 FastUDPFlows::run_task(Task* t) {
+    if (!_active || (_limit != NO_LIMIT && _count >= _limit)) {
+        return false;
+    }
 #if HAVE_BATCH
     if (in_batch_mode) {
         const unsigned int max = 32;
         PacketBatch *batch;
-        MAKE_BATCH(FastUDPFlows::pull(0), batch, max);
+        MAKE_BATCH(get_p(), batch, max);
         if (likely(batch)) {
             output(0).push_batch(batch);
             t->fast_reschedule();
@@ -207,7 +214,7 @@ FastUDPFlows::run_task(Task* t) {
     } else
 #endif
     {
-        Packet* p = FastUDPFlows::pull(0);
+        Packet* p = get_p();
         if (likely(p)) {
             output(0).push(p);
             t->fast_reschedule();
@@ -241,21 +248,15 @@ FastUDPFlows::cleanup(CleanupStage)
 }
 
 Packet *
-FastUDPFlows::pull(int)
-{
+FastUDPFlows::get_p() {
     Packet *p = 0;
-
-    if (!_active || (_limit != NO_LIMIT && _count >= _limit)) {
-        return 0;
-    }
-
     if(_rate_limited){
         if (_rate.need_update(Timestamp::now())) {
             _rate.update();
-            p = get_packet();
+            p = gen_packet();
         }
     } else {
-        p = get_packet();
+        p = gen_packet();
     }
 
     if (p) {
@@ -270,7 +271,19 @@ FastUDPFlows::pull(int)
             }
         }
     }
+    return p;
+}
 
+Packet *
+FastUDPFlows::pull(int)
+{
+    Packet *p = 0;
+
+    if (!_active || (_limit != NO_LIMIT && _count >= _limit)) {
+        return 0;
+    }
+
+    p = get_p();
     return p;
 }
 
@@ -278,7 +291,10 @@ FastUDPFlows::pull(int)
 PacketBatch *
 FastUDPFlows::pull_batch(int port, unsigned max) {
     PacketBatch *batch;
-    MAKE_BATCH(FastUDPFlows::pull(port), batch, max);
+    if (!_active || (_limit != NO_LIMIT && _count >= _limit)) {
+        return 0;
+    }
+    MAKE_BATCH(get_p(), batch, max);
     return batch;
 }
 #endif
@@ -413,6 +429,7 @@ FastUDPFlows::add_handlers()
     add_write_handler("srceth", FastUDPFlows::eth_write_handler, 0);
     add_write_handler("dsteth", FastUDPFlows::eth_write_handler, 1);
     add_data_handlers("length", Handler::OP_READ, &_len);
+    add_data_handlers("limit", Handler::OP_READ, &_limit);
     add_write_handler("length", length_write_handler, 0);
     add_data_handlers("stop", Handler::OP_READ | Handler::OP_WRITE, &_stop);
 }

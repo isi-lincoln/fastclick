@@ -1,5 +1,6 @@
 #ifndef CLICK_XDPLOADER_HH
 #define CLICK_XDPLOADER_HH
+
 #include <click/element.hh>
 #include <click/hashtable.hh>
 #include <click/string.hh>
@@ -7,7 +8,6 @@
 #include <click/bpf.hh>
 
 extern "C" {
-#include <net/if.h>
 #include <error.h>
 #include <errno.h>
 }
@@ -16,11 +16,14 @@ CLICK_DECLS
 
 
 /*
-=title XDPLoader
-
 =c
 
-XDPLoader()
+XDPLoader
+
+=s 
+
+Load a BPF program at PATH into the XDP device DEV
+
 */
 
 class XDPLoader : public Element {

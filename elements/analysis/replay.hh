@@ -7,6 +7,7 @@
 #include <click/vector.hh>
 #include <click/notifier.hh>
 #include <click/tinyexpr.hh>
+#include <click/error.hh>
 #include <strings.h>
 CLICK_DECLS
 
@@ -38,7 +39,6 @@ protected:
 
     bool _active;
     bool _loaded;
-
     unsigned int _burst;
     int _stop;
     int _stop_time;
@@ -160,9 +160,12 @@ inline bool ReplayBase::load_packets() {
                 if (p_input[i] == 0) {
                     do_pull:
 #if HAVE_BATCH
-                    p_input[i] = input_pull_batch(i,1)->first();
+                    if (likely(receives_batch))
+                        p_input[i] = input_pull_batch(i,1)->first();
+                    else
+                        p_input[i] = PacketBatch::make_from_packet(input(i).pull())->first();
 #else
-                    p_input[i] = input(i).pull();
+                        p_input[i] = input(i).pull();
 #endif
                     if (p_input[i] == 0) {
                         if (_use_signal && _input[i].signal.active()) {

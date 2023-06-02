@@ -89,6 +89,7 @@ class Packet { public:
     // Packet now owns the mbuf.
     static inline Packet *make(struct mbuf *mbuf) CLICK_WARN_UNUSED_RESULT;
 #endif
+
 #if CLICK_USERLEVEL || CLICK_MINIOS
     typedef void (*buffer_destructor_type)(unsigned char* buf, size_t sz, void* argument);
 
@@ -115,6 +116,7 @@ class Packet { public:
     inline bool shared() const;
     inline bool shared_nonatomic() const;
     Packet *clone(bool fast = false) CLICK_WARN_UNUSED_RESULT;
+    WritablePacket *duplicate(int32_t extra_headroom = 0, int32_t extra_tailroom = 0) CLICK_WARN_UNUSED_RESULT;
     inline WritablePacket *uniqueify() CLICK_WARN_UNUSED_RESULT;
 #ifndef CLICK_NOINDIRECT
 # if CLICK_LINUXMODULE
@@ -930,7 +932,6 @@ private:
     void assimilate_mbuf();
 #endif
 
-    WritablePacket *duplicate(int32_t extra_headroom, int32_t extra_tailroom) CLICK_WARN_UNUSED_RESULT;
     inline void shift_header_annotations(const unsigned char *old_head, int32_t extra_headroom);
     WritablePacket *expensive_uniqueify(int32_t extra_headroom, int32_t extra_tailroom, bool free_on_failure) CLICK_WARN_UNUSED_RESULT;
     WritablePacket *expensive_push(uint32_t nbytes) CLICK_WARN_UNUSED_RESULT;
@@ -1772,7 +1773,7 @@ Packet::make(struct rte_mbuf *mb, bool clear)
 inline void
 Packet::kill()
 {
-	#if CLICK_LINUXMODULE
+#if CLICK_LINUXMODULE
 		struct sk_buff *b = skb();
 		b->next = b->prev = 0;
 		# if LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 15)
@@ -1780,24 +1781,32 @@ Packet::kill()
 		# endif
 		skbmgr_recycle_skbs(b);
     #elif CLICK_PACKET_USE_DPDK
-#if HAVE_FLOW_DYNAMIC
+        # if HAVE_FLOW_DYNAMIC
         if (fcb_stack) {
             fcb_stack->release(1);
         }
-#endif
+        # endif
 		//Dpdk takes care of indirect and related things
 		rte_pktmbuf_free(mb());
 	#elif HAVE_CLICK_PACKET_POOL && !defined(CLICK_FORCE_EXPENSIVE)
-#ifndef CLICK_NOINDIRECT
+        # ifndef CLICK_NOINDIRECT
 		if (_use_count.dec_and_test())
-#endif
+        # endif
         {
 			WritablePacket::recycle(static_cast<WritablePacket *>(this));
 		}
 	#else
+        # if HAVE_FLOW_DYNAMIC
+        if (fcb_stack) {
+                fcb_stack->release(1);
+        }
+        # endif
+        SFCB_STACK(
         if (_use_count.dec_and_test()) {
+
             delete this;
         }
+        )
     #endif
 }
 
@@ -1819,25 +1828,34 @@ Packet::kill_nonatomic()
     # endif
         skbmgr_recycle_skbs(b);
 #elif CLICK_PACKET_USE_DPDK
-#if HAVE_FLOW_DYNAMIC
+# if HAVE_FLOW_DYNAMIC
         if (fcb_stack) {
             fcb_stack->release(1);
         }
-#endif
+# endif
         rte_pktmbuf_free(mb());
 #elif HAVE_CLICK_PACKET_POOL
 
-#ifndef CLICK_NOINDIRECT
+# ifndef CLICK_NOINDIRECT
         if (_use_count.nonatomic_dec_and_test())
-#endif
+# endif
         {
             WritablePacket::recycle(static_cast<WritablePacket *>(this));
 
         }
 #else
+# if HAVE_FLOW_DYNAMIC
+        if (fcb_stack) {
+
+                click_chatter("Release ksn");
+            fcb_stack->release(1);
+        }
+# endif
+        SFCB_STACK(
         if (_use_count.nonatomic_dec_and_test()) {
             delete this;
         }
+        )
 #endif
 }
 

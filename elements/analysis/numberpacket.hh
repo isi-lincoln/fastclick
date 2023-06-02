@@ -9,9 +9,11 @@ CLICK_DECLS
 /*
 =c
 
-NumberPacket()
+NumberPacket() Set an increasing number inside packet
 
-=s
+=s analysis
+
+=d
 
 Set an increasing number inside the payload of each packet
 
@@ -28,7 +30,7 @@ acounting for this format. Defaults to false.
 
 RecordTimestamp, TimestampDiff */
 
-class NumberPacket : public BatchElement {
+class NumberPacket : public SimpleElement<NumberPacket> {
 public:
     NumberPacket() CLICK_COLD;
     ~NumberPacket() CLICK_COLD;
@@ -41,9 +43,6 @@ public:
     int configure(Vector<String> &, ErrorHandler *) CLICK_COLD;
 
     Packet *simple_action(Packet *) override;
-#if HAVE_BATCH
-    PacketBatch *simple_action_batch(PacketBatch *) override;
-#endif
 
     static inline uint64_t read_number_of_packet(
             const Packet *p, int offset, bool net_order = false) {

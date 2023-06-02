@@ -17,6 +17,7 @@
 #include <click/config.h>
 #include <click/glue.hh>
 #include <click/args.hh>
+#include <click/algorithm.hh>
 #include <click/ipflowid.hh>
 #include <click/routervisitor.hh>
 #include <click/error.hh>
@@ -27,7 +28,7 @@
 
 CLICK_DECLS
 
-FlowIPManager::FlowIPManager() : _verbose(1), _flags(0), _timer(this), _task(this), _cache(true), Router::InitFuture(this)
+FlowIPManager::FlowIPManager() : _verbose(1), _flags(0), _timer(this), _task(this), _cache(true), _qbsr(0), Router::InitFuture(this)
 {
 }
 
@@ -39,16 +40,19 @@ int
 FlowIPManager::configure(Vector<String> &conf, ErrorHandler *errh)
 {
     bool lf = false;
+    int recycle_interval = 1;
+    int timeout = 60;
 
     if (Args(conf, this, errh)
         .read_or_set_p("CAPACITY", _table_size, 65536)
         .read_or_set("RESERVE", _reserve, 0)
-        .read_or_set("TIMEOUT", _timeout, 60)
+        .read_or_set("TIMEOUT", timeout, 60)
 #if RTE_VERSION > RTE_VERSION_NUM(18,8,0,0)
         .read_or_set("LF", lf, false)
 #endif
         .read_or_set("CACHE", _cache, true)
         .read_or_set("VERBOSE", _verbose, 1)
+        .read_or_set("RECYCLE_INTERVAL", recycle_interval, 1)
         .complete() < 0)
         return -1;
 
@@ -62,6 +66,12 @@ FlowIPManager::configure(Vector<String> &conf, ErrorHandler *errh)
         click_chatter("Real capacity will be %d",_table_size);
     }
 
+    _recycle_interval_ms = (int)(recycle_interval * 1000);
+    _epochs_per_sec = max(1, (int)(1000 / _recycle_interval_ms));
+    _timeout_ms = timeout * 1000;
+    _timeout_epochs = timeout * _epochs_per_sec;
+
+
 #if RTE_VERSION > RTE_VERSION_NUM(18,8,0,0)
     if (lf) {
         _flags &= ~RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY;
@@ -69,7 +79,7 @@ FlowIPManager::configure(Vector<String> &conf, ErrorHandler *errh)
     }
 #endif
 
-    _reserve += sizeof(IPFlow5ID)  + sizeof(FlowControlBlock);
+    _reserve += sizeof(uint32_t) + (_timeout_epochs > 0?sizeof(FlowControlBlock*):0);
 
     return 0;
 }
@@ -85,11 +95,11 @@ int FlowIPManager::solve_initialize(ErrorHandler *errh)
     hash_params.hash_func_init_val = 0;
     hash_params.extra_flag = _flags;
 
-    assert(_reserve >=  sizeof(IPFlow5ID) + sizeof(FlowControlBlock));
-    _flow_state_size_full = _reserve;
+    assert(_reserve >=  sizeof(uint32_t) + (_timeout_epochs > 0?sizeof(FlowControlBlock*):0));
+    _flow_state_size_full = sizeof(FlowControlBlock) + _reserve;
 
     if (_verbose)
-     errh->message("Per-flow size is %d", _reserve);
+        errh->message("Per-flow size is %d", _reserve);
     sprintf(buf, "%s", name().c_str());
     hash = rte_hash_create(&hash_params);
     if (!hash)
@@ -101,11 +111,16 @@ int FlowIPManager::solve_initialize(ErrorHandler *errh)
     if (!fcbs)
         return errh->error("Could not init data table !");
 
-    if (_timeout > 0) {
-        _timer_wheel.initialize(_timeout);
+    if (_timeout_epochs > 0) {
+        if (_flags) {
+            errh->warning("This element uses a timer wheel that will use a global lock. Consider using FlowIPManager_CuckooPP instead which uses per-thread timer wheels.");
+        }
+
+
+        _timer_wheel.initialize(_timeout_epochs);
 
         _timer.initialize(this);
-        _timer.schedule_after(Timestamp::make_sec(1));
+        _timer.schedule_after(Timestamp::make_msec(_recycle_interval_ms));
         _task.initialize(this, false);
 
     }
@@ -113,10 +128,30 @@ int FlowIPManager::solve_initialize(ErrorHandler *errh)
     return Router::InitFuture::solve_initialize(errh);
 }
 
+/**
+ * Returns the location of the IPFlow5ID in the FCB (first data)
+ */
+/*static inline IPFlow5ID *get_fcb_key(FlowControlBlock *fcb) {
+    return (IPFlow5ID *)FCB_DATA(fcb, 0);
+};*/
+static inline uint32_t *get_fcb_flowid(FlowControlBlock *fcb) {
+    return (uint32_t *)FCB_DATA(fcb, 0);
+};
 
+/**
+ * Returns the location of the IPFlow5ID in the FCB (second data, after the key  when released)
+ */
 static inline FlowControlBlock** fcb_next_ptr(FlowControlBlock* fcb) {
-    return (FlowControlBlock**)(((unsigned char*)&fcb->data_32) + sizeof(IPFlow5ID));
+     return (FlowControlBlock **)(fcb->data + sizeof(uint32_t));
 }
+
+/**
+ * Returns the location of the IPFlow5ID in the FCB (secothird  data, after the next released ptr  when released)
+ */
+static inline uint32_t* get_released_fcb_flowid(FlowControlBlock* fcb) {
+    return (uint32_t*)(get_fcb_flowid(fcb));
+}
+
 
 static const auto setter = [](FlowControlBlock* prev, FlowControlBlock* next)
 {
@@ -126,17 +161,36 @@ static const auto setter = [](FlowControlBlock* prev, FlowControlBlock* next)
 bool FlowIPManager::run_task(Task* t)
 {
     Timestamp recent = Timestamp::recent_steady();
+    while (_qbsr) {
+        FlowControlBlock* next = *fcb_next_ptr(_qbsr);
+        rte_hash_free_key_with_position(hash, *get_released_fcb_flowid(_qbsr));
+        _qbsr = next;
+    }
     _timer_wheel.run_timers([this,recent](FlowControlBlock* prev) -> FlowControlBlock*{
         FlowControlBlock* next = *fcb_next_ptr(prev);
-        int old = (recent - prev->lastseen).sec();
-        if (old > _timeout) {
+        int old = (recent - prev->lastseen).msecval();
+        if (old >= _timeout_ms) {
             if (unlikely(_verbose > 1))
                 click_chatter("Release %p as it is expired since %d", prev, old);
             //expire
-            rte_hash_del_key(hash, (IPFlow5ID*)&prev->data_32[0]);
+            void* keyptr;
+            if (unlikely(rte_hash_get_key_with_position(hash, *get_fcb_flowid(prev),&keyptr) != 0)) {
+                click_chatter("Could not get flow key");
+            } else {
+                int fid = rte_hash_del_key(hash, keyptr); //get_fcb_key(prev));
+                //From now on the key is detroyed, the FCB can't be found
+                //However in LF, a thread might be using the FCB still. It won't use the key
+                //So the key space can be used to remember the next id
+                if (this->_flags & RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF) {
+                    *get_released_fcb_flowid(prev) = fid;
+                    *fcb_next_ptr(prev) = _qbsr;
+                    _qbsr = prev;
+                }
+            }
         } else {
             //No need for lock as we'll be the only one to enqueue there
-            _timer_wheel.schedule_after(prev, _timeout - (recent - prev->lastseen).sec(),setter);
+            //int delta = (recent - prev->lastseen).sec();
+            _timer_wheel.schedule_after(prev, _timeout_epochs, setter);
         }
         return next;
     });
@@ -146,7 +200,7 @@ bool FlowIPManager::run_task(Task* t)
 void FlowIPManager::run_timer(Timer* t)
 {
     _task.reschedule();
-    t->reschedule_after(Timestamp::make_sec(1));
+    t->reschedule_after(Timestamp::make_msec(_recycle_interval_ms));
 }
 
 void FlowIPManager::cleanup(CleanupStage stage)
@@ -180,13 +234,15 @@ void FlowIPManager::process(Packet* p, BatchBuilder& b, const Timestamp& recent)
         if (unlikely(_verbose > 1))
             click_chatter("New flow %d", ret);
         fcb = (FlowControlBlock*)((unsigned char*)fcbs + (_flow_state_size_full * ret));
-        //Remember ID for deletion
-        *((IPFlow5ID*)&fcb->data_32[0]) = fid;
-        if (_timeout) {
+
+        if (_timeout_epochs) {
+            //memcpy(get_fcb_key(fcb), &fid, sizeof(IPFlow5ID));
+            *get_fcb_flowid(fcb) = ret;
+
             if (_flags) {
-                _timer_wheel.schedule_after_mp(fcb, _timeout, setter);
+                _timer_wheel.schedule_after_mp(fcb, _timeout_epochs, setter);
             } else {
-                _timer_wheel.schedule_after(fcb, _timeout, setter);
+                _timer_wheel.schedule_after(fcb, _timeout_epochs, setter);
             }
         }
     } else { //existing flow
@@ -202,6 +258,9 @@ void FlowIPManager::process(Packet* p, BatchBuilder& b, const Timestamp& recent)
         batch = b.finish();
         if (batch) {
             fcb_stack->lastseen = recent;
+#if HAVE_FLOW_DYNAMIC
+            fcb_acquire(batch->count());
+#endif
             output_push_batch(0, batch);
         }
         fcb_stack = fcb;
@@ -216,6 +275,7 @@ void FlowIPManager::process(Packet* p, BatchBuilder& b, const Timestamp& recent)
 
 void FlowIPManager::push_batch(int, PacketBatch* batch)
 {
+    SFCB_STACK(
     BatchBuilder b;
     Timestamp recent = Timestamp::recent_steady();
     FOR_EACH_PACKET_SAFE(batch, p) {
@@ -225,8 +285,12 @@ void FlowIPManager::push_batch(int, PacketBatch* batch)
     batch = b.finish();
     if (batch) {
         fcb_stack->lastseen = recent;
+#if HAVE_FLOW_DYNAMIC
+        fcb_acquire(batch->count());
+#endif
         output_push_batch(0, batch);
     }
+    );
 }
 
 enum {h_count};
@@ -250,6 +314,6 @@ void FlowIPManager::add_handlers()
 
 CLICK_ENDDECLS
 
-ELEMENT_REQUIRES(dpdk dpdk19)
+ELEMENT_REQUIRES(dpdk dpdk19 flow)
 EXPORT_ELEMENT(FlowIPManager)
 ELEMENT_MT_SAFE(FlowIPManager)
