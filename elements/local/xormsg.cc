@@ -36,6 +36,7 @@
 // protocol files
 #include "xorproto.hh"
 #include "xormsg.hh"
+#include "helper.hh"
 //#include "bloom/bloom_filter.hpp"
 
 CLICK_DECLS
@@ -57,7 +58,7 @@ unsigned long long get_64_rand() {
 }
 
 // update IP packet checksum
-void ip_check(WritablePacket *p) {
+void ip_checksum_update_xor(WritablePacket *p) {
     click_ip *iph = (click_ip *) p->data();
     iph->ip_sum = 0;
     iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
@@ -141,7 +142,7 @@ void XORMsg::send_packets(
 
         iph2->ip_p = 0;//144-252
         // update the ip header checksum for the next host in the path
-        ip_check(pkt);
+        ip_checksum_update_xor(pkt);
 
         // This sets/annotates the network header as well as pushes into packet
         Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
@@ -709,7 +710,7 @@ void XORMsg::decode(int ports, PacketBatch *pb) {
         //iph3->ip_len = htons( sizeof(click_ip) +  i.length());
 
         // update the ip header checksum for the next host in the path
-        ip_check(pkt);
+        ip_checksum_update_xor(pkt);
 
         // ship it
         output(0).push(pkt);

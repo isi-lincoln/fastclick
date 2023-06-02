@@ -17,14 +17,11 @@
 #include <clicknet/tcp.h> // tcp header checksum
 #include <clicknet/udp.h> // udp header checksum
 
-// protocol files
-#include "sssproto.hh"
-#include "sssmsg.hh"
 
 // handling shared cache
 //#include <mutex>          // std::mutex
 #include <assert.h>    // sanity check
-#include<iostream>
+#include <iostream>
 
 /*****   THIS IS THE CRYPTO SECTION *****/
 #include <iostream>
@@ -38,6 +35,10 @@
 #include <cryptopp/secblock.h>  // SecBlock
 #include <cryptopp/files.h> // FileSource
 
+// protocol files
+#include "sssproto.hh"
+#include "sssmsg.hh"
+#include "helper.hh"
 
 /*****   THIS IS END CRYPTO SECTION *****/
 
@@ -122,13 +123,6 @@ std::string SSSMsg::RecoverData(int threshold, std::vector<std::string> shares) 
     return secret;
 }
 
-// update IP packet checksum
-void ip_check(WritablePacket *p) {
-    click_ip *iph = (click_ip *) p->data();
-    iph->ip_sum = 0;
-    iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
-}
-
 // allow the user to configure the shares and threshold amounts
 int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     uint8_t shares;
@@ -159,6 +153,14 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     _function = function;
 
     return 0;
+}
+
+
+// update IP packet checksum
+void ip_checksum_update_sss(WritablePacket *p) {
+    click_ip *iph = (click_ip *) p->data();
+    iph->ip_sum = 0;
+    iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
 }
 
 
@@ -284,7 +286,7 @@ void SSSMsg::encrypt(int ports, Packet *p) {
 
 
         // update the ip header checksum for the next host in the path
-        ip_check(pkt);
+        ip_checksum_update_sss(pkt);
 
 
 	new_pkt_size = pkt->length();
@@ -452,7 +454,7 @@ void SSSMsg::decrypt(int ports, Packet *p) {
     memcpy((void*)new_pkt->data(), mh, sizeof(click_ether));
 
     // update the ip header checksum for the next host in the path
-    ip_check(pkt);
+    ip_checksum_update_sss(pkt);
 
     DEBUG_PRINT("sss size: %lu ~~~~ original size: %lu\n", p->length(), new_pkt->length());
 
