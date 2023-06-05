@@ -7,9 +7,10 @@
 #include <chrono> // timer
 #include <tuple>
 
-#include <click/element.hh>
+//#include <click/element.hh>
+#include <click/batchelement.hh>
 #include <click/timer.hh>
-#include <click/task.hh>
+//#include <click/task.hh>
 #include <clicknet/ether.h>
 #include <clicknet/udp.h>
 #include <include/click/packet.hh> // packet defn.
@@ -18,7 +19,7 @@
 
 CLICK_DECLS
 
-class PacketData{
+class PacketData {
     public:
 	Packet *pkt; // packet data itself
         unsigned long long id; // unique identifier
@@ -54,7 +55,7 @@ const unsigned func_encode = 0;
 const unsigned func_decode = 1;
 const unsigned func_forward = 2;
 
-class XORMsg : public Element {
+class XORMsg : public BatchElement {
 
     // 0: encode, 1: decode
     uint8_t _function;
@@ -115,7 +116,10 @@ class XORMsg : public Element {
 	// for handling the multithreading / task management
 	bool run_task(Task *task);
 	// push but for batch operations
-	//void push_batch(int port, PacketBatch *p) override;
+	// 
+#if HAVE_BATCH
+	void push_batch(int port, PacketBatch *p);
+#endif
 
     private:
         class State {
