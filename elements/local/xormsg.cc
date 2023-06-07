@@ -314,12 +314,19 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 
 
     DEBUG_PRINT("cpus: %u\n", click_max_cpu_ids());
-    //for (unsigned i = 0; i < click_max_cpu_ids(); i++) {
-    for (unsigned i = 0; i < 1; i++) {
+    for (unsigned i = 0; i < click_max_cpu_ids(); i++) {
+    //for (unsigned i = 0; i < 1; i++) {
+        /*
         State &s = _state.get_value_for_thread(i);
         s.tasks = new Task(this);
         s.tasks->initialize(this,true);
         s.tasks->move_thread(i);
+        */
+        State &s = _state.get_value_for_thread(i);
+        s.timers = new Timer(this);
+        s.timers->initialize(this,true);
+        s.timers->schedule_now();
+        s.timers->move_thread(i);
     }
     
     //_disable_threads = true;
@@ -766,6 +773,7 @@ void XORMsg::push_batch(int ports, PacketBatch *pb){
         for (auto const& dm : dst_map){
             std::vector<Packet*> vp = dm.second;
             unsigned long dst_host = dm.first;
+            std::vector<char*> tmp;
 
             // if we dont have enough packets to create symbols, create bogus
             if ( vp.size() % _symbols != 0 ) {
@@ -779,6 +787,7 @@ void XORMsg::push_batch(int ports, PacketBatch *pb){
 
                     // TODO: check if p->kill frees this memory or i have to
                     char* ma= new char[temp_length];
+                    tmp.push_back(ma);
                     memcpy(ma, vp[0], header_length);
                     populate_packet(ma+header_length, temp_length-header_length);
 
@@ -799,9 +808,16 @@ void XORMsg::push_batch(int ports, PacketBatch *pb){
                 for (auto &p : new_pb) {
                     p->kill();
                 }
+                new_pb.clear();
 
                 DEBUG_PRINT("after encode, size: %lu\n", vp.size());
             }
+            
+            for (auto &m: tmp) {
+                delete m;
+            }
+            tmp.clear();
+
         }
     } else if (_function == func_decode) {
         DEBUG_PRINT("decode func: %d\n", pb->count());
@@ -1021,9 +1037,8 @@ void XORMsg::push(int ports, Packet *p) {
 }
 */
 
-bool XORMsg::run_task(Task *task) {
-    DEBUG_PRINT("run_task begin\n");
-    State &s = _state.get();
+bool XORMsg::loop_helper(){
+    DEBUG_PRINT("helper begin\n");
 
     DEBUG_PRINT("decode map keys: %lu\n", decode_map.size());
     for (auto it = decode_map.cbegin(), next_it = it; it != decode_map.cend(); it = next_it){
@@ -1039,6 +1054,7 @@ bool XORMsg::run_task(Task *task) {
         if ( vp.size() == 0  ) {
             ++next_it;
             decode_map.erase(it);
+            vp.clear();
         } else if ( vp.size() < _symbols ) {
             DEBUG_PRINT("not enough symbols: %lu\n", cid);
             ++next_it;
@@ -1049,6 +1065,8 @@ bool XORMsg::run_task(Task *task) {
                 for (auto &p : vp){
                     p->kill();
                 }
+                vp.clear();
+                DEBUG_PRINT("finished old packets\n");
             }
         } else {
             DEBUG_PRINT("calling decode\n");
@@ -1058,17 +1076,35 @@ bool XORMsg::run_task(Task *task) {
             for (auto &p : vp){
                 p->kill();
             }
+            vp.clear();
             DEBUG_PRINT("cleaning up\n");
         }
         dlock.release();
         DEBUG_PRINT("lock released\n");
     }
 
-    
-    DEBUG_PRINT("rescheduling task\n");
-    s.tasks->fast_reschedule();
     return true;
 }
+
+void XORMsg::run_timer(Timer *task) {
+    State &s = _state.get();
+    loop_helper();
+    DEBUG_PRINT("rescheduling helper in: %lu ms\n", _timer);
+    s.timers->reschedule_after_msec(_timer);
+}
+
+
+bool XORMsg::run_task(Task *task) { return false; }
+/*
+bool XORMsg::run_task(Task *task) {
+    State &s = _state.get();
+    bool rc = loop_helper();
+    s.tasks->fast_reschedule();
+    return rc;
+}
+*/
+
+
 /*
 bool XORMsg::run_task(Task *task) {
     State &s = _state.get();   // 1

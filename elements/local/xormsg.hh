@@ -108,7 +108,9 @@ class XORMsg : public BatchElement {
 	void latency_checker();
 
 	// for handling the multithreading / task management
+	bool loop_helper();
 	bool run_task(Task *task);
+	void run_timer(Timer *timer);
 	// push but for batch operations
 
 #if HAVE_BATCH
@@ -119,12 +121,12 @@ class XORMsg : public BatchElement {
         class State {
             public:
                 //State() : encode_batch(0), decode_batch(0), timers(0) {};
-                State() : encode_batch(0), decode_batch(0), tasks(0) {};
-                std::unordered_map<uint32_t, PacketBatch* > encode_batch; 
-                std::unordered_map<uint32_t, PacketBatch* > decode_batch; 
-                //Timer*  timers;
+                //State() : encode_batch(0), decode_batch(0), tasks(0), timers(0) {};
+                State() : tasks(0), timers(0) {};
+                //std::unordered_map<uint32_t, PacketBatch* > encode_batch; 
+                //std::unordered_map<uint32_t, PacketBatch* > decode_batch; 
+                Timer*  timers;
                 Task*  tasks;
-
         };
 
         per_thread<State> _state;
