@@ -53,7 +53,6 @@ The input packet data must be a valid IPv4 packet.
 
 const unsigned func_encode = 0;
 const unsigned func_decode = 1;
-const unsigned func_forward = 2;
 
 class XORMsg : public BatchElement {
 
@@ -83,14 +82,12 @@ class XORMsg : public BatchElement {
         XORMsg();
         ~XORMsg();
 
-        std::unordered_map<uint32_t, std::vector<PacketData*> > send_storage; 
-        std::unordered_map<uint64_t, std::vector<std::tuple<uint8_t, std::string, unsigned long long> > > recv_storage;
-        Spinlock elock;
-        Spinlock dlock;
+    	Spinlock dlock;
+    	
         std::unordered_map<uint32_t, PacketBatch* > ebatch; 
         std::unordered_map<uint32_t, PacketBatch* > dbatch; 
 
-        std::unordered_map<uint64_t, std::string> solutions;
+        std::unordered_map<uint64_t, std::vector<Packet*> > decode_map; 
 
         const char *class_name() const { return "XORMsg"; }
         const char *port_count() const { return "1-/1-"; } // depending on directionality, 1/3+ or 3+/1
@@ -104,11 +101,8 @@ class XORMsg : public BatchElement {
         void push(int port, Packet *p);
 
         // make these public functions to inherit members
-        //void encode(int port, Packet *p);
-        //void decode(int port, Packet *p);
-        void encode(int port, unsigned long longest, PacketBatch *pb);
-        void decode(int port, PacketBatch *pb);
-        void forward(int port, Packet *p);
+        void encode(int port, unsigned long longest, std::vector<Packet*> pb);
+        void decode(int port, std::vector<Packet*> pb);
 
         void send_packets(std::vector<XORProto*> pkts, const unsigned char* nh, const unsigned char* mh, unsigned long dhost);
 	void latency_checker();
@@ -116,7 +110,7 @@ class XORMsg : public BatchElement {
 	// for handling the multithreading / task management
 	bool run_task(Task *task);
 	// push but for batch operations
-	// 
+
 #if HAVE_BATCH
 	void push_batch(int port, PacketBatch *p);
 #endif
