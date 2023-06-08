@@ -6,6 +6,7 @@
 #include <mutex> // cache handling
 #include <chrono> // timer
 #include <tuple>
+#include <map>
 
 //#include <click/element.hh>
 #include <click/batchelement.hh>
@@ -19,28 +20,6 @@
 
 CLICK_DECLS
 
-class PacketData {
-    public:
-	Packet *pkt; // packet data itself
-        unsigned long long id; // unique identifier
-        std::chrono::high_resolution_clock::time_point timestamp;
-	std::string data;
-
-        // constructors
-        PacketData() {}
-        PacketData(Packet *p, unsigned long long i, std::chrono::high_resolution_clock::time_point ts) : pkt(p), id(i), timestamp(ts) {
-            data = std::string(reinterpret_cast<const char *>(p->data()), p->length());
-	}
-        ~PacketData();
-
-	std::string GetData() {
-            return data;
-	}
-
-	unsigned long GetDataLength() {
-            return data.length();
-	}
-};
 
 /*
 =c
@@ -62,18 +41,11 @@ class XORMsg : public BatchElement {
     // symbols to use (assume 3 minimum)
     uint8_t _symbols;
 
-    // latency for stray packets that dont have other packets
-    // to XOR with
-    unsigned long _latency;
-
     // timer for each time check
     unsigned long _timer;
 
     // mtu of each link if known prior
     unsigned long _mtu;
-
-    // if the latency is 0, disable threading
-    bool _disable_threads;
 
     // threads
     unsigned _threads;
@@ -82,12 +54,13 @@ class XORMsg : public BatchElement {
         XORMsg();
         ~XORMsg();
 
-    	Spinlock dlock;
-    	
-        std::unordered_map<uint32_t, PacketBatch* > ebatch; 
-        std::unordered_map<uint32_t, PacketBatch* > dbatch; 
-
+        Spinlock dlock;
+        Spinlock plock;
+        
+        //std::vector<std::pair<uint64_t, Timestamp>> sorted_ids;
         std::unordered_map<uint64_t, std::vector<Packet*> > decode_map; 
+        //std::unordered_map<uint8_t, std::vector<Packet*> > encode_send_map; 
+        std::vector<PacketBatch*> pb_mem;
 
         const char *class_name() const { return "XORMsg"; }
         const char *port_count() const { return "1-/1-"; } // depending on directionality, 1/3+ or 3+/1
@@ -105,16 +78,14 @@ class XORMsg : public BatchElement {
         void decode(int port, std::vector<Packet*> pb);
 
         void send_packets(std::vector<XORProto*> pkts, const unsigned char* nh, const unsigned char* mh, unsigned long dhost);
-	void latency_checker();
 
-	// for handling the multithreading / task management
-	bool loop_helper();
-	bool run_task(Task *task);
-	void run_timer(Timer *timer);
-	// push but for batch operations
+        // for handling the multithreading / task management
+        bool loop_helper();
+        bool run_task(Task *task);
+        void run_timer(Timer *timer);
 
 #if HAVE_BATCH
-	void push_batch(int port, PacketBatch *p);
+    void push_batch(int port, PacketBatch *p);
 #endif
 
     private:
