@@ -1,4 +1,4 @@
-#define DEBUG 1
+//#define DEBUG 1
 #ifdef DEBUG
 #define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
@@ -93,9 +93,56 @@ char* populate_packet(void* buffer, unsigned long long length) {
     return (char*)buffer;
 }
 
+
+
+/*
 // work horse for all functions that need to send a packet.
 // requires having a L3 (nh) and L2 (mh) header to overwrite before sending the packet.
 // because XOR only handles the data of the packet, we need to have an unspoiled header.
+void XORMsg::send_packets(
+    std::vector<XORProto*> pkts, const unsigned char* nh,
+    const unsigned char* mh, unsigned long dst_host) {
+
+    // TODO: this assumes a 1-1 matching between packets being XORd and interfaces
+    unsigned iface_counter = 0;
+    // now lets create the shares
+    DEBUG_PRINT("send_pkts size: %lu\n", pkts.size());
+    for (auto i: pkts) {
+        //DEBUG_PRINT("port: %u -- out: %u, total size: %lu\n", iface_counter, i->Len, sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len));
+        WritablePacket *pkt = Packet::make(i, (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)));
+
+        // we done screwed up.
+        if (!pkt) return;
+
+        // add space at the front to put back on the old ip and mac headers
+        Packet *ip_pkt = pkt->push(sizeof(click_ip));
+        memcpy((void*)ip_pkt->data(), (void*)nh, sizeof(click_ip));
+
+        // these lines in overwritting the ip header are only needed when using Linux Forwarding.
+        click_ip *iph2 = (click_ip *) ip_pkt->data();
+        //iph2->ip_len = ntohs( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)) );
+        iph2->ip_len = htons( sizeof(click_ip) + (sizeof(XORProto)-(XORPROTO_DATA_LEN-i->Len)) );
+
+        iph2->ip_p = 0;//144-252
+        // update the ip header checksum for the next host in the path
+        ip_checksum_update_xor(pkt);
+
+        // This sets/annotates the network header as well as pushes into packet
+        Packet *new_pkt = pkt->push_mac_header(sizeof(click_ether));
+        memcpy((void*)new_pkt->data(), (void*)mh, sizeof(click_ether));
+
+        DEBUG_PRINT("sending packet for interface: %d\n", iface_counter);
+
+        assert(iface_counter < _symbols);
+        output(iface_counter).push(pkt);
+
+        iface_counter++;
+    }
+
+}
+*/
+
+
 void XORMsg::send_packets(
     std::vector<XORProto*> pkts, const unsigned char* nh,
     const unsigned char* mh, unsigned long dst_host) {
@@ -129,13 +176,16 @@ void XORMsg::send_packets(
         memcpy((void*)new_pkt->data(), (void*)mh, sizeof(click_ether));
 
         //DEBUG_PRINT("sending packet for interface: %d\n", iface_counter);
-
         // send packet out the given port
-        // we cant batch here because only one packet will go out a single port
-        // unless we create a datastructure to hold the packets until timer
-        // or threshold
+
         assert(iface_counter < _symbols);
+        //if (!single_interface) {
         output(iface_counter).push(new_pkt);
+        //} else {
+        //    output(0).push(new_pkt);
+        //}
+
+        //pkt->kill();
 
         iface_counter++;
     }
@@ -294,28 +344,23 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 
     _threads = click_max_cpu_ids();
 
-    if (_function == func_decode) {
-        unsigned new_threads = _threads;
-        DEBUG_PRINT("enabling %u decode threads.\n", new_threads);
-        //for (unsigned i = 0; i < new_threads; i++) {
-        for (unsigned i = 0; i < 1; i++) {
-            // Task Code
-            State &s = _state.get_value_for_thread(i);
-            s.tasks = new Task(this);
-            s.tasks->initialize(this,true);
-            s.tasks->move_thread(i);
-            // Timer Code
-            /*
-            State &s = _state.get_value_for_thread(i);
-            s.timers = new Timer(this);
-            s.timers->initialize(this,true);
-            //s.timers->schedule_now();
-            float timer_offset = (_timer / new_threads)*i;
-            DEBUG_PRINT("starting thread %u in %d ms.\n", i, (int)floor(timer_offset));
-            s.timers->reschedule_after_msec((int)floor(timer_offset));
-            s.timers->move_thread(i);
-            */
-        }
+    unsigned new_threads = _threads;
+    DEBUG_PRINT("enabling %u decode threads.\n", new_threads);
+    for (unsigned i = 0; i < new_threads; i++) {
+    //for (unsigned i = 0; i < 1; i++) {
+        // Task Code
+        State &s = _state.get_value_for_thread(i);
+        s.tasks = new Task(this);
+        s.tasks->initialize(this,true);
+        s.tasks->move_thread(i);
+        // Timer Code
+        /*
+        State &s = _state.get_value_for_thread(i);
+        s.timers = new Timer(this);
+        s.timers->initialize(this,true);
+        s.timers->move_thread(i);
+        s.timers->schedule_now();
+        */
     }
     
 
@@ -324,15 +369,13 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     return 0;
 }
 
-void XORMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
-    //DEBUG_PRINT("encode begin\n");
+void XORMsg::encode(unsigned long dst, std::vector<Packet*> pb) {
+    DEBUG_PRINT("encode begin\n");
 
     std::vector<unsigned long> lengths;
-    //DEBUG_PRINT("encode size: %lu\n", pb.size());
+    DEBUG_PRINT("encode size: %lu\n", pb.size());
 
-    for(auto iter=pb.begin(); iter != pb.end(); iter++){
-        Packet* p = (*iter);
-        //DEBUG_PRINT("pkt length: %u\n", p->length());
+    for(auto &p : pb){
         lengths.push_back(p->length());
     }
     //DEBUG_PRINT("find longest\n");
@@ -343,22 +386,20 @@ void XORMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
     std::vector<XORProto*> xor_pkts = sub_encode(pb, _symbols, longest, _mtu);
     send_packets(xor_pkts, pb[0]->network_header(), pb[0]->mac_header(), dst);
 
-    /*
     DEBUG_PRINT("encoding packet(s) took: %s\n", 
                (Timestamp::now_steady() - pb[0]->timestamp_anno()).unparse().c_str()
     );
-    */
 
     // clear up data
     for (auto i: xor_pkts) { delete i; }
     //xor_pkts.clear();
 
-    //DEBUG_PRINT("end encode\n");
+    DEBUG_PRINT("end encode\n");
 }
 
 
 void XORMsg::decode(int ports, std::vector<Packet*> pb) {
-    //DEBUG_PRINT("decode begin\n");
+    DEBUG_PRINT("decode begin\n");
     if (pb.size() != _symbols){
         DEBUG_PRINT("not correct number of packets to decode\n");
         return;
@@ -434,7 +475,7 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
     uint64_t long chunks = xs.length() >> 4ULL;
     // solve for a // 1
     // 6^7 // (b^c)^(a^b^c) // x^y
-    char* aa = new char[xs.length()];
+    char aa[xs.length()];
     std::string a;
 
     //DEBUG_PRINT("decode chunks: %lu.\n", chunks);
@@ -449,7 +490,7 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
 
     // solve for c // 4
     // 3^7 // (a^b)^(a^b^c) // x^z
-    char* cc= new char[zs.length()];
+    char cc[xs.length()];
     std::string c;
 
     for (int i = 0; i < chunks ; ++i){
@@ -463,7 +504,7 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
 
     // solve for b // 2
     // 1^3 // a^(a^b) // a^z
-    char* bb= new char[ys.length()];
+    char bb[xs.length()];
     std::string b;
 
     for (int i = 0; i < chunks ; ++i){
@@ -481,7 +522,7 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
 
     // add these solutions to memory (later put it in mem cache)
 
-    PacketBatch* ppb = 0;
+    //PacketBatch* ppb = 0;
     for ( auto i : deets ) {
         WritablePacket *pkt = Packet::make(i.length());
         memcpy((void*)pkt->data(), i.c_str(), i.length());
@@ -498,15 +539,14 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
         if (iph->ip_dst != iph2->ip_dst){
             // TODO: do i need to kill this here when i kill it outside
             //DEBUG_PRINT("packet is bogus, dropping\n");
-            //pkt->kill();
+            pkt->kill();
             continue;
         }
 
 
         if (!IP_ISFRAG(iph)) {
             // TODO
-            if (ip_len > i.length()) {
-            } else {
+            if (i.length() > (ip_len+DEFAULT_MAC_LEN)) {
                 pkt->take(i.length()-(ip_len+DEFAULT_MAC_LEN));
             }
         } else {
@@ -521,41 +561,39 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
                 || ((p_lastoff & 7) != 0 && (iph->ip_off & htons(IP_MF)) != 0)
                 || i.length() < p_lastoff - p_off) {
                 // TODO: do i need to kill this here when i kill it outside
-                //pkt->kill();
+                pkt->kill();
                 continue;
             }
             //DEBUG_PRINT("taking: %d, final length: %ld\n", p_lastoff-p_off, (i.length() - (p_lastoff - p_off)));
 
-            pkt->take(i.length() - (p_lastoff - p_off));
+
+            if(i.length() > (p_lastoff - p_off)){
+                pkt->take(i.length() - (p_lastoff - p_off));
+            }
         }
 
 
         // update the ip header checksum for the next host in the path
         ip_checksum_update_xor(pkt);
 
-        if (ppb == 0) {
-            ppb = PacketBatch::make_from_packet(pkt);
-        } else {
-            ppb->append_packet(pkt);
+        output(0).push(pkt);
+        if (pkt) {
+            pkt->kill();
         }
+
 
     }
 
     // ship it, we've put them all in a batch to reduce whatever latency
     // is cause by shiping out the interface
-    output(0).push_batch(ppb);
+    //output(0).push_batch(ppb);
 
     // clear up memory allocated
-    delete[] aa;
-    delete[] bb;
-    delete[] cc;
 
-    //DEBUG_PRINT("decoding packet took: %s\n", (Timestamp::now_steady() - pb[0]->timestamp_anno()).unparse().c_str());
+    DEBUG_PRINT("decoding packet took: %s\n", (Timestamp::now_steady() - pb[0]->timestamp_anno()).unparse().c_str());
 
 }
 
-// TODO random generation
-// TODO bounds checking on overflow - does this matter? we will force app to manage staleness
 int XORMsg::initialize(ErrorHandler *errh) {
     return 0;
 }
@@ -592,270 +630,173 @@ int check_packet_header(Packet *p) {
     return 1;
 }
 
-
-void XORMsg::push_batch(int ports, PacketBatch *pb){
-    std::vector<Packet*> vpb;
-    FOR_EACH_PACKET(pb,p){
-        p->set_timestamp_anno(Timestamp::now_steady());
-        vpb.push_back(p);
+void XORMsg::push(int ports, Packet *p) {
+    DEBUG_PRINT("pkt recv\n");
+    int rc = check_packet_header(p);
+    if (rc < 0) {
+        p->kill();
+        return;
     }
-    //pb_mem.push_back(pb);
+
+    p->set_timestamp_anno(Timestamp::now_steady());
+
+    const click_ip *iph = p->ip_header();
+    unsigned long dst_host = IPAddress(iph->ip_dst.s_addr);
 
     if (_function == func_encode) {
-        //DEBUG_PRINT("encode func: %d\n", pb->count());
-        // local destination map to use for quick shipping
-        std::unordered_map<uint32_t, std::vector<Packet*> > dst_map;
-
-        // for each packet in the batch, check that it is valid
-        // and then add it to the local ip_dst map
-        for (auto it = vpb.begin(); it != vpb.end(); it++){
-            Packet* p = *it;
-            int rc = check_packet_header(p);
-            if (rc < 0) {
-                vpb.erase(it--); // erase current element
-                continue;
-            }
-
-            const click_ip *iph = p->ip_header();
-            unsigned long dst_host = IPAddress(iph->ip_dst.s_addr);
-
-            dst_map[dst_host].push_back(p);
-        }
-
-        // now we check that local map for all packets with the same dest
-        // while there are enough to encode together, do so, when we have
-        // less than the desired amount, we treat like a single packet.
-        for (auto const& dm : dst_map){
-            std::vector<Packet*> vp = dm.second;
-            unsigned long dst_host = dm.first;
-            std::vector<char*> tmp;
-
-            // if we dont have enough packets to create symbols, create bogus
-            if ( vp.size() % _symbols != 0 ) {
-                int pkts_to_generate =  _symbols - (vp.size() % _symbols);
-                for (int i = 0; i < pkts_to_generate; i++) {
-                    unsigned long temp_length = vp[0]->length();
-                    WritablePacket *pkt = Packet::make(temp_length);
-                    const click_ip *iph = vp[0]->ip_header();
-                    unsigned long iplen = iph->ip_hl << 2;
-                    unsigned long header_length = DEFAULT_MAC_LEN + iplen;
-
-                    // this is allocated memory we need to clean up before function end
-                    char* ma= new char[temp_length];
-                    tmp.push_back(ma);
-
-                    memcpy(ma, vp[0], header_length);
-                    populate_packet(ma+header_length, temp_length-header_length);
-
-                    vp.push_back(pkt);
-                }
-            }
-
-            while(vp.size() > 0) {
-                //DEBUG_PRINT("encode many, size: %lu\n", vp.size());
-                // create a new packetbatch for encode from the first 3 packets
-                // in vector
-                std::vector<Packet*> new_pb(vp.begin(), vp.begin()+_symbols);
-
-                // call encode
-                encode(ports, dst_host, new_pb);
-
-                vp.erase(vp.begin(), vp.begin()+_symbols);
-                for (auto p : new_pb) {
-                    if (p) {
-                        p->kill();
-                    }
-                }
-                //new_pb.clear();
-            }
-            
-            // clean up our allocated memory
-            for (auto m: tmp) {
-                delete m;
-            }
-            //tmp.clear();
-
-        }
-
-        //pb->kill();
+        elock.acquire();
+        dst_map[dst_host].push_back(p);
+        DEBUG_PRINT("to dst_map: %lu\n", dst_map[dst_host].size());
+        elock.release();
     } else if (_function == func_decode) {
-        //DEBUG_PRINT("decode func: %d\n", pb->count());
+        unsigned long iplen = iph->ip_hl << 2;
+        unsigned long header_length = DEFAULT_MAC_LEN + iplen;
 
-        // local destination map to use for quick shipping
-        std::unordered_map<uint32_t, std::vector<Packet*> > dst_map;
-        std::unordered_map<unsigned long long, std::vector<Packet*> > sym_map;
-
-        // for each packet in the batch, check that it is valid
-        // and then add it to the local ip_dst map
-        for (auto it = vpb.begin(); it != vpb.end(); it++){
-            Packet* p = *it;
-            int rc = check_packet_header(p);
-            if (rc < 0) {
-                vpb.erase(it--); // erase current element
-                if (p) {
-                    p->kill();
-                }
-                continue;
-            }
-
-            const click_ip *iph = p->ip_header();
-            unsigned long dst_host = IPAddress(iph->ip_dst.s_addr);
-
-            dst_map[dst_host].push_back(p);
+        // if the proto is not 0 than this is not a decode packet
+        unsigned proto = iph->ip_p;
+        if (proto != 0) {
+            p->kill();
+            return;
         }
 
-        for (auto const& dm : dst_map){
-            std::vector<Packet*> dvpb = dm.second;
+        const XORProto *xorpkt = reinterpret_cast<const XORProto *>(p->data()+header_length);
+        unsigned long long clusterid = xorpkt->SymbolB;
 
-            for (auto &p : dvpb) {
-                const click_ip *iph = p->ip_header();
-                unsigned long iplen = iph->ip_hl << 2;
-                unsigned long header_length = DEFAULT_MAC_LEN + iplen;
-        
-                // if the proto is not 0 than this is not a decode packet
-                unsigned proto = iph->ip_p;
-                if (proto != 0) {
-                    if (p) {
-                        p->kill();
-                    }
-                    continue;
-                }
-        
-                const XORProto *xorpkt = reinterpret_cast<const XORProto *>(p->data()+header_length);
-                unsigned long long clusterid = xorpkt->SymbolB;
- 
-                sym_map[clusterid].push_back(p);
-            }
-
-            //DEBUG_PRINT("symbol map keys: %lu\n", sym_map.size());
-            for (auto const& sm : sym_map){
-                std::vector<Packet*> spb = sm.second;
-                unsigned long long clusterid = sm.first;
-                //DEBUG_PRINT("symbol values: %lu\n", spb.size());
-                if (spb.size() < _symbols) {
-                    for (auto &p: spb){
-                        dlock.acquire();
-                        //DEBUG_PRINT("lock acquired 2\n");
-                        decode_map[clusterid].push_back(p);
-                        dlock.release();
-                        //DEBUG_PRINT("lock release 2\n");
-                    }
-                } else {
-                    // This code doesnt get called because encoder function is sending
-                    // each packet at once, because we arent packetbatching it out
-                    DEBUG_PRINT("calling decode\n");
-                    decode(ports, spb);
-                    for (auto p: spb){
-                        if (p) {
-                            p->kill();
-                        }
-                    }
-                }
-            }
-        }
-        
+        dlock.acquire();
+        DEBUG_PRINT("to decode map\n");
+        decode_map[clusterid].push_back(p);
+        dlock.release();
     } else {
         fprintf(stderr, "unknown function. not supported: %d\n", _function);
         return;
     }
 }
 
-
-/*
- * Defunct: Use push_batch()
- * Requires: --enable-batch (--enable-flow) in click configuration parameters
- */
-void XORMsg::push(int ports, Packet *p) {
-    fprintf(stderr, "push not enabled for xormsg. use push_batch, enable --enable_batch in configuration.\n");
-    fprintf(stderr, "FromDevice -> FromDPDKDevice, xormsg requires all elements be in push mode.\n");
-    exit(1);
-}
-
-bool XORMsg::loop_helper(){
+void XORMsg::decode_packet_helper(){
+    DEBUG_PRINT("in decode thingy\n");
     dlock.acquire();
     std::vector<uint64_t> old_keys;
-    /*
-    if (decode_map.size() == 0) {
-        decode_map.clear();
-        dlock.release();
-        return true;
-    }
-    */
 
-    for (auto &dm: decode_map){
-        uint64_t cid = dm.first;
+    DEBUG_PRINT("decode map size: %lu\n", decode_map.size());
+    for (auto dm: decode_map){
+        uint64_t clusterid = dm.first;
         std::vector<Packet*> vp = dm.second;
+        std::vector<char*> tmp;
+        if (vp.size() == 0){
+            fprintf(stderr, "this shouldnt happen.\n");
+            old_keys.push_back(clusterid);
+            continue;
+        }
 
-        if ( vp.size() == 0  ) {
-            old_keys.push_back(dm.first);
-        } else if ( vp.size() < _symbols ) {
-            // remove anything unmatched after 100ms
+        //DEBUG_PRINT("symbol values: %lu\n", spb.size());
+        if (vp.size() < _symbols) {
             if ((Timestamp::now_steady() - vp[0]->timestamp_anno()).msec() > 100) {
                 for (auto p : vp){
                     if (p) {
                         p->kill();
                     }
                 }
-                old_keys.push_back(dm.first);
+                old_keys.push_back(clusterid);
             }
         } else {
             decode(0, vp);
-            for (auto p : vp){
+            for (auto p: vp){
                 if (p) {
                     p->kill();
                 }
             }
-            old_keys.push_back(dm.first);
+
+            old_keys.push_back(clusterid);
         }
     }
 
-    /*
-    if (old_keys.size() != 0) {
-        DEBUG_PRINT("Deleting %lu of %lu keys\n", old_keys.size(), decode_map.size());
-    }
-    */
-    for (auto key: old_keys){
-        decode_map.erase(key);
+    for (auto id: old_keys){
+        decode_map.erase(id);
     }
 
     dlock.release();
+    DEBUG_PRINT("out of decode packet thingy\n");
+}
 
-    plock.acquire();
-    /*
-    for (auto it = pb_mem.begin(); it != pb_mem.end(); it++){
-        PacketBatch* pb = (*it);
-        if (pb) {
-            FOR_EACH_PACKET_SAFE(pb,p){
+// assume timers
+void XORMsg::encode_packet_helper(){
+    DEBUG_PRINT("in encode_packet_helper\n");
+    elock.acquire();
+    //DEBUG_PRINT("lock acquired: dst map size: %lu\n", dst_map.size());
+    for (auto dm: dst_map){
+        std::vector<Packet*> vp = dm.second;
+        unsigned long dst_host = dm.first;
+        std::vector<char*> tmp;
+        DEBUG_PRINT("begin packets: %lu\n", vp.size());
+
+        if ( vp.size() % _symbols != 0 ) {
+            int pkts_to_generate =  _symbols - (vp.size() % _symbols);
+            for (int i = 0; i < pkts_to_generate; i++) {
+                unsigned long temp_length = vp[0]->length();
+                WritablePacket *pkt = Packet::make(temp_length);
+                const click_ip *iph = vp[0]->ip_header();
+                unsigned long iplen = iph->ip_hl << 2;
+                unsigned long header_length = DEFAULT_MAC_LEN + iplen;
+
+                // this is allocated memory we need to clean up before function end
+                char* ma= new char[temp_length];
+                tmp.push_back(ma);
+
+                memcpy(ma, vp[0], header_length);
+                populate_packet(ma+header_length, temp_length-header_length);
+
+                vp.push_back(pkt);
+            }
+        }
+
+        //DEBUG_PRINT("packet mod 3: %lu\n", vp.size());
+
+        while(vp.size() > 0) {
+            DEBUG_PRINT("vp size: %lu\n", vp.size());
+            std::vector<Packet*> new_pb(vp.begin(), vp.begin()+_symbols);
+
+            // call encode
+            encode(dst_host, new_pb);
+
+            DEBUG_PRINT("clearing packets\n");
+            for (auto p : new_pb) {
                 if (p) {
                     p->kill();
                 }
             }
+            
+
+            vp.erase(vp.begin(), vp.begin()+_symbols);
         }
-        pb_mem.erase(it--);
+
+        //DEBUG_PRINT("clearing allocated packets: %lu\n", tmp.size());
+        for (auto m: tmp) {
+            delete m;
+        }
     }
-    */
-    plock.release();
-
-    return true;
+    dst_map.clear();
+    elock.release();
+    DEBUG_PRINT("lock released\n");
+    
 }
 
-void XORMsg::run_timer(Timer *task) {
+void XORMsg::run_timer(Timer *timer) {
+    DEBUG_PRINT("in timers\n");
     State &s = _state.get();
-    loop_helper();
-    //DEBUG_PRINT("rescheduling helper in: %lu ms\n", _timer);
     s.timers->reschedule_after_msec(_timer);
+    encode_packet_helper();
+    decode_packet_helper();
 }
 
-
-//bool XORMsg::run_task(Task *task) { return false; }
 bool XORMsg::run_task(Task *task) {
-    State &s = _state.get();
-    bool rc = loop_helper();
-    s.tasks->fast_reschedule();
-    return rc;
+    DEBUG_PRINT("in tasks\n");
+    encode_packet_helper();
+    decode_packet_helper();
+    task->fast_reschedule();
+    return true;
 }
 
 
 CLICK_ENDDECLS
-ELEMENT_REQUIRES(userlevel batch)
+ELEMENT_REQUIRES(userlevel)
 EXPORT_ELEMENT(XORMsg)

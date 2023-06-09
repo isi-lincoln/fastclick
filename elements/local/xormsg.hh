@@ -9,9 +9,9 @@
 #include <map>
 
 //#include <click/element.hh>
-#include <click/batchelement.hh>
+//#include <click/batchelement.hh>
 #include <click/timer.hh>
-//#include <click/task.hh>
+#include <click/task.hh>
 #include <clicknet/ether.h>
 #include <clicknet/udp.h>
 #include <include/click/packet.hh> // packet defn.
@@ -33,7 +33,8 @@ The input packet data must be a valid IPv4 packet.
 const unsigned func_encode = 0;
 const unsigned func_decode = 1;
 
-class XORMsg : public BatchElement {
+//class XORMsg : public BatchElement {
+class XORMsg : public Element {
 
     // 0: encode, 1: decode
     uint8_t _function;
@@ -55,12 +56,13 @@ class XORMsg : public BatchElement {
         ~XORMsg();
 
         Spinlock dlock;
-        Spinlock plock;
+        Spinlock elock;
         
-        //std::vector<std::pair<uint64_t, Timestamp>> sorted_ids;
         std::unordered_map<uint64_t, std::vector<Packet*> > decode_map; 
-        //std::unordered_map<uint8_t, std::vector<Packet*> > encode_send_map; 
-        std::vector<PacketBatch*> pb_mem;
+        std::unordered_map<uint32_t, std::vector<Packet*> > dst_map; 
+
+        void encode_packet_helper();
+        void decode_packet_helper();
 
         const char *class_name() const { return "XORMsg"; }
         const char *port_count() const { return "1-/1-"; } // depending on directionality, 1/3+ or 3+/1
@@ -74,19 +76,19 @@ class XORMsg : public BatchElement {
         void push(int port, Packet *p);
 
         // make these public functions to inherit members
-        void encode(int port, unsigned long longest, std::vector<Packet*> pb);
+        void encode(unsigned long dst, std::vector<Packet*> pb);
         void decode(int port, std::vector<Packet*> pb);
 
         void send_packets(std::vector<XORProto*> pkts, const unsigned char* nh, const unsigned char* mh, unsigned long dhost);
 
         // for handling the multithreading / task management
-        bool loop_helper();
+        //bool loop_helper();
         bool run_task(Task *task);
         void run_timer(Timer *timer);
 
-#if HAVE_BATCH
-    void push_batch(int port, PacketBatch *p);
-#endif
+//#if HAVE_BATCH
+//    void push_batch(int port, PacketBatch *p);
+//#endif
 
     private:
         class State {
