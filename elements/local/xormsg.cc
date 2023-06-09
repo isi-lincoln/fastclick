@@ -1,4 +1,4 @@
-#define DEBUG 1
+//#define DEBUG 1
 #ifdef DEBUG
 #define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
@@ -434,7 +434,7 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
     uint64_t long chunks = xs.length() >> 4ULL;
     // solve for a // 1
     // 6^7 // (b^c)^(a^b^c) // x^y
-    char* aa = new char[xs.length()];
+    char aa[xs.length()];
     std::string a;
 
     //DEBUG_PRINT("decode chunks: %lu.\n", chunks);
@@ -449,7 +449,7 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
 
     // solve for c // 4
     // 3^7 // (a^b)^(a^b^c) // x^z
-    char* cc= new char[zs.length()];
+    char cc[zs.length()];
     std::string c;
 
     for (int i = 0; i < chunks ; ++i){
@@ -463,7 +463,7 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
 
     // solve for b // 2
     // 1^3 // a^(a^b) // a^z
-    char* bb= new char[ys.length()];
+    char bb[ys.length()];
     std::string b;
 
     for (int i = 0; i < chunks ; ++i){
@@ -496,17 +496,14 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
         std::string dst_host = std::string(IPAddress(iph2->ip_dst).unparse().mutable_c_str());
 
         if (iph->ip_dst != iph2->ip_dst){
-            // TODO: do i need to kill this here when i kill it outside
-            //DEBUG_PRINT("packet is bogus, dropping\n");
-            //pkt->kill();
+            DEBUG_PRINT("packet is bogus, dropping\n");
+            pkt->kill();
             continue;
         }
 
 
         if (!IP_ISFRAG(iph)) {
-            // TODO
-            if (ip_len > i.length()) {
-            } else {
+            if (i.length() > (ip_len+DEFAULT_MAC_LEN)) {
                 pkt->take(i.length()-(ip_len+DEFAULT_MAC_LEN));
             }
         } else {
@@ -520,13 +517,13 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
             if (p_lastoff > 0xFFFF || p_lastoff <= p_off
                 || ((p_lastoff & 7) != 0 && (iph->ip_off & htons(IP_MF)) != 0)
                 || i.length() < p_lastoff - p_off) {
-                // TODO: do i need to kill this here when i kill it outside
-                //pkt->kill();
+                pkt->kill();
                 continue;
             }
-            //DEBUG_PRINT("taking: %d, final length: %ld\n", p_lastoff-p_off, (i.length() - (p_lastoff - p_off)));
 
-            pkt->take(i.length() - (p_lastoff - p_off));
+            if(i.length() > (p_lastoff - p_off)){
+                pkt->take(i.length() - (p_lastoff - p_off));
+            }
         }
 
 
@@ -545,12 +542,7 @@ void XORMsg::decode(int ports, std::vector<Packet*> pb) {
     // is cause by shiping out the interface
     output(0).push_batch(ppb);
 
-    // clear up memory allocated
-    delete[] aa;
-    delete[] bb;
-    delete[] cc;
-
-    //DEBUG_PRINT("decoding packet took: %s\n", (Timestamp::now_steady() - pb[0]->timestamp_anno()).unparse().c_str());
+    DEBUG_PRINT("decoding packet took: %s\n", (Timestamp::now_steady() - pb[0]->timestamp_anno()).unparse().c_str());
 
 }
 
