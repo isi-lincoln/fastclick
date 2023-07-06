@@ -5,3 +5,6 @@
 [submodule "elements/local/bloom"]
 	path = elements/local/bloom
 	url = https://github.com/isi-lincoln/bloom.git
+[submodule "include/gferasure"]
+	path = include/gferasure
+	url = https://pulwar.isi.edu/lincoln/gferasure.git
