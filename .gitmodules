@@ -8,3 +8,6 @@
 [submodule "include/gferasure"]
 	path = include/gferasure
 	url = https://pulwar.isi.edu/lincoln/gferasure.git
+[submodule "elements/local/gferasure"]
+	path = elements/local/gferasure
+	url = https://pulwar.isi.edu/lincoln/gferasure.git
