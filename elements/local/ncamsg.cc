@@ -1,4 +1,4 @@
-//#define DEBUG 1
+#define DEBUG 1
 #ifdef DEBUG
 #define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
@@ -137,6 +137,8 @@ std::vector<gf_8_t*> packet_encoding(
     gf_w_state< gf_8_t, gf8_ssse3_state > state,
     int max_bytes, int simd_vector_size) {
 
+    DEBUG_PRINT("in packet encoding\n");
+
     // TODO: also assumes all packets are the same size (max_bytes)
     assert(pb.size() > 0);
     assert(max_bytes % simd_vector_size == 0); //make sure we've padded to adjust for vectors
@@ -169,6 +171,7 @@ std::vector<gf_8_t*> packet_encoding(
         delete[] enc;
     }
 
+    DEBUG_PRINT("in size of encoded packets: %lu\n", encoded_packets.size());
     return encoded_packets;
 
 }
@@ -258,6 +261,7 @@ void NCAMsg::send_packets(
     std::vector<NCAProto*> pkts, const unsigned char* nh,
     const unsigned char* mh, unsigned long dst_host) {
 
+    DEBUG_PRINT("in send_packets: %d\n", pkts.size());
     // TODO: this assumes a 1-1 matching between packets being coded and interfaces
     unsigned iface_counter = 0;
 
@@ -266,7 +270,10 @@ void NCAMsg::send_packets(
         WritablePacket *pkt = Packet::make(i, (sizeof(NCAProto)-(NCAPROTO_DATA_LEN-i->Len)));
 
         // we done screwed up.
-        if (!pkt) return;
+        if (!pkt) {
+            DEBUG_PRINT("bad packet\n");
+            return;
+        }
 
         // add space at the front to put back on the old ip and mac headers
         Packet *ip_pkt = pkt->push(sizeof(click_ip));
@@ -289,6 +296,7 @@ void NCAMsg::send_packets(
         // unless we create a datastructure to hold the packets until timer
         // or threshold
         assert(iface_counter < _links);
+        DEBUG_PRINT("pkt out interface\n");
         output(iface_counter).push(new_pkt);
 
         iface_counter++;
@@ -298,12 +306,15 @@ void NCAMsg::send_packets(
 
 // generate a random number between current and max and make sure modulo vector size
 long add_padding(unsigned long max, unsigned long current, unsigned long vector) {
+    assert(max-vector > current);
     std::uniform_int_distribution< unsigned long > pad(current, max-vector);
-    unsigned long tmp = pad(enger);
+    unsigned long tmp = pad(enger) + current;
     if (tmp % vector != 0) {
         unsigned long added = tmp % vector;
+        DEBUG_PRINT("tmp: %lu, vector: %lu, added: %lu\n", tmp, vector, added);
         tmp = tmp + (vector-added);
     }
+    DEBUG_PRINT("padding value: %lu to current: %lu\n", tmp, current);
     return tmp;
 }
 
@@ -315,6 +326,7 @@ std::vector<NCAProto*> sub_encode(
     std::vector<Packet*> pb, unsigned long longest, unsigned long mtu, uint32_t pp
 ) {
 
+    DEBUG_PRINT("in sub encode, num packets: %lu\n", pb.size());
     assert(pb.size() > 0);
 
     std::vector<NCAProto*> ncadata;
@@ -322,12 +334,14 @@ std::vector<NCAProto*> sub_encode(
     unsigned packets = pb.size();
 
     // adds random data to the end of each packet
-    unsigned long total_length = add_padding(mtu-500, longest, vector_length) + longest;
+    unsigned long total_length = add_padding(mtu-500, longest, vector_length);
+    DEBUG_PRINT("total length: %lu\n", total_length);
 
     const click_ip *iph = pb[0]->ip_header();
     unsigned long iplen = iph->ip_hl << 2;
     unsigned long header_length = DEFAULT_MAC_LEN + iplen;
     unsigned long data_length = total_length-header_length;
+    DEBUG_PRINT("data length: %lu\n", data_length);
 
     std::vector<gf_8_t *> packet_data;
 
@@ -337,6 +351,7 @@ std::vector<NCAProto*> sub_encode(
         unsigned long t_length = pb[i]->length();
         assert(total_length >= t_length);
         unsigned long to_add_length = total_length - t_length;
+        DEBUG_PRINT("to add length: %lu\n", to_add_length);
 
         // create a buffer to hold our random data
         char* ma[to_add_length];
@@ -345,13 +360,16 @@ std::vector<NCAProto*> sub_encode(
         // add to the end of the packet, the difference
         // each packet is now total_length in size.
         WritablePacket * q = pb[i]->put(to_add_length);
-        if (!q) { return ncadata; }
+        if (!q) {
+            DEBUG_PRINT("bad packet put\n");
+            return ncadata;
+        }
         memcpy((void*)(q->data()+t_length), ma, to_add_length);
 
 
         //gf_8_t * data[data_length];
-        gf_8_t * data = new gf_8_t[data_length];
-        memcpy(data, q->data()+header_length, data_length);
+        gf_8_t * data = new gf_8_t[total_length];
+        memcpy(data, q->data(), total_length);
         packet_data.push_back(data);
     }
 
@@ -365,7 +383,7 @@ std::vector<NCAProto*> sub_encode(
     // we've now modified each packet of random length, now we need to do our
     // multiplications.
 
-    std::vector<gf_8_t*> encoded = packet_encoding(packet_data, matrix, state, data_length, vector_length);
+    std::vector<gf_8_t*> encoded = packet_encoding(packet_data, matrix, state, total_length, vector_length);
 
     for (unsigned counter = 0; counter < packets; counter++) {
         // create our new packet
@@ -373,7 +391,7 @@ std::vector<NCAProto*> sub_encode(
         ncapkt->Version = 0;
         ncapkt->Len = total_length;
         ncapkt->Pkts = packets;
-        memcpy(ncapkt->Data, encoded[counter], data_length);
+        memcpy(ncapkt->Data, encoded[counter], total_length);
 
         // so we have Eq = Row <Counter> [ C0 | C1 | C2 ]
         unsigned long long eq = matrix.e(counter,0) << 16;
@@ -381,8 +399,11 @@ std::vector<NCAProto*> sub_encode(
         eq = eq & matrix.e(counter, 2);
         ncapkt->Equation = eq;
         ncapkt->Id = id;
+
+        ncadata.push_back(ncapkt);
     }
 
+    DEBUG_PRINT("size of nca data: %lu\n", ncadata.size());
     return ncadata;
 }
 
@@ -454,10 +475,10 @@ int NCAMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 }
 
 void NCAMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
-    //DEBUG_PRINT("encode begin\n");
+    DEBUG_PRINT("encode begin\n");
 
     std::vector<unsigned long> lengths;
-    //DEBUG_PRINT("encode size: %lu\n", pb.size());
+    DEBUG_PRINT("encode size: %lu\n", pb.size());
 
     for(auto iter=pb.begin(); iter != pb.end(); iter++){
         Packet* p = (*iter);
@@ -467,10 +488,12 @@ void NCAMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
     //DEBUG_PRINT("find longest\n");
     // find smallest and longest sized packets, excluding 0 length if given
     unsigned long longest = *std::max_element(lengths.begin(), lengths.end());
-    //DEBUG_PRINT("longest element: %lu\n", longest);
+    DEBUG_PRINT("longest element: %lu\n", longest);
 
-    std::vector<NCAProto*> xor_pkts = sub_encode(pb, longest, _mtu, _pp);
-    send_packets(xor_pkts, pb[0]->network_header(), pb[0]->mac_header(), dst);
+    std::vector<NCAProto*> nca_pkts = sub_encode(pb, longest, _mtu, _pp);
+    DEBUG_PRINT("sub encode complete\n");
+    send_packets(nca_pkts, pb[0]->network_header(), pb[0]->mac_header(), dst);
+    DEBUG_PRINT("send packets complete\n");
 
     /*
     DEBUG_PRINT("encoding packet(s) took: %s\n", 
@@ -479,10 +502,10 @@ void NCAMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
     */
 
     // clear up data
-    for (auto i: xor_pkts) { delete i; }
+    for (auto i: nca_pkts) { delete i; }
     //xor_pkts.clear();
 
-    //DEBUG_PRINT("end encode\n");
+    DEBUG_PRINT("end encode\n");
 }
 
 void set_row(uint32_t eq, int row, gf_matrix< gf_8_t, gf8_ssse3_state > m){
@@ -496,7 +519,7 @@ void set_row(uint32_t eq, int row, gf_matrix< gf_8_t, gf8_ssse3_state > m){
 
 
 void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
-    //DEBUG_PRINT("decode begin\n");
+    DEBUG_PRINT("decode begin\n");
     if (pb.size() != _links){
         DEBUG_PRINT("not correct number of packets to decode\n");
         return;
@@ -612,8 +635,6 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
 
 }
 
-// TODO random generation
-// TODO bounds checking on overflow - does this matter? we will force app to manage staleness
 int NCAMsg::initialize(ErrorHandler *errh) {
     return 0;
 }
@@ -653,15 +674,15 @@ int ensure_packet_header(Packet *p) {
 
 // TODO pick up here tomorrow
 void NCAMsg::push_batch(int ports, PacketBatch *pb){
+    DEBUG_PRINT("in push batch\n");
     std::vector<Packet*> vpb;
     FOR_EACH_PACKET(pb,p){
         p->set_timestamp_anno(Timestamp::now_steady());
         vpb.push_back(p);
     }
-    //pb_mem.push_back(pb);
 
     if (_function == func_encode) {
-        //DEBUG_PRINT("encode func: %d\n", pb->count());
+        DEBUG_PRINT("encode func: %d\n", pb->count());
         // local destination map to use for quick shipping
         std::unordered_map<uint32_t, std::vector<Packet*> > dst_map;
 
@@ -711,7 +732,7 @@ void NCAMsg::push_batch(int ports, PacketBatch *pb){
             }
 
             while(vp.size() > 0) {
-                //DEBUG_PRINT("encode many, size: %lu\n", vp.size());
+                DEBUG_PRINT("encode many, size: %lu\n", vp.size());
                 // create a new packetbatch for encode from the first 3 packets
                 // in vector
                 std::vector<Packet*> new_pb(vp.begin(), vp.begin()+_links);
@@ -738,7 +759,7 @@ void NCAMsg::push_batch(int ports, PacketBatch *pb){
 
         //pb->kill();
     } else if (_function == func_decode) {
-        //DEBUG_PRINT("decode func: %d\n", pb->count());
+        DEBUG_PRINT("decode func: %d\n", pb->count());
 
         // local destination map to use for quick shipping
         std::unordered_map<uint32_t, std::vector<Packet*> > dst_map;
@@ -786,11 +807,11 @@ void NCAMsg::push_batch(int ports, PacketBatch *pb){
                 sym_map[clusterid].push_back(p);
             }
 
-            //DEBUG_PRINT("symbol map keys: %lu\n", sym_map.size());
+            DEBUG_PRINT("symbol map keys: %lu\n", sym_map.size());
             for (auto const& sm : sym_map){
                 std::vector<Packet*> spb = sm.second;
                 unsigned long long clusterid = sm.first;
-                //DEBUG_PRINT("symbol values: %lu\n", spb.size());
+                DEBUG_PRINT("symbol values: %lu\n", spb.size());
                 if (spb.size() < _links) {
                     for (auto &p: spb){
                         dlock.acquire();
