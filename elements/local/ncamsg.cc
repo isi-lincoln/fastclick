@@ -261,7 +261,7 @@ void NCAMsg::send_packets(
     std::vector<NCAProto*> pkts, const unsigned char* nh,
     const unsigned char* mh, unsigned long dst_host) {
 
-    DEBUG_PRINT("in send_packets: %d\n", pkts.size());
+    DEBUG_PRINT("in send_packets: %ld\n", pkts.size());
     // TODO: this assumes a 1-1 matching between packets being coded and interfaces
     unsigned iface_counter = 0;
 
@@ -385,6 +385,10 @@ std::vector<NCAProto*> sub_encode(
 
     std::vector<gf_8_t*> encoded = packet_encoding(packet_data, matrix, state, total_length, vector_length);
 
+    matrix.print("encoded matrix");
+
+    DEBUG_PRINT("on wire: %lu\n", (sizeof(NCAProto)-(NCAPROTO_DATA_LEN-total_length))+DEFAULT_MAC_LEN+iplen);
+
     for (unsigned counter = 0; counter < packets; counter++) {
         // create our new packet
         NCAProto *ncapkt = new NCAProto;
@@ -394,11 +398,16 @@ std::vector<NCAProto*> sub_encode(
         memcpy(ncapkt->Data, encoded[counter], total_length);
 
         // so we have Eq = Row <Counter> [ C0 | C1 | C2 ]
-        unsigned long long eq = matrix.e(counter,0) << 16;
-        eq = eq & matrix.e(counter, 1) << 8;
-        eq = eq & matrix.e(counter, 2);
+        unsigned long long t = matrix.e(counter,0);
+        unsigned long long u = matrix.e(counter,1);
+        unsigned long long v = matrix.e(counter,2);
+        unsigned long long eq = ((counter & 0x3) << 24) ^ \
+                                ((t & 0xff) << 16) ^ \
+                                ((u & 0xff) << 8) ^ \
+                                (v & 0xff);
         ncapkt->Equation = eq;
         ncapkt->Id = id;
+        DEBUG_PRINT("id: %llu, eq: %llx\n", id, eq);
 
         ncadata.push_back(ncapkt);
     }
@@ -508,13 +517,13 @@ void NCAMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
     DEBUG_PRINT("end encode\n");
 }
 
-void set_row(uint32_t eq, int row, gf_matrix< gf_8_t, gf8_ssse3_state > m){
-    uint8_t c0 = eq && 0x0000ff;
-    uint8_t c1 = (eq >> 2) && 0x00ff;
-    uint8_t c2 = (eq >> 4) && 0xff;
-    m.e(row, 0) = c0;
-    m.e(row, 1) = c0;
-    m.e(row, 2) = c0;
+void set_row(uint32_t eq, int row, gf_matrix< gf_8_t, gf8_ssse3_state > *m){
+    uint8_t c0 = ((eq >> 16) & 0xff);
+    uint8_t c1 = ((eq >> 8) & 0xff);
+    uint8_t c2 = (eq & 0xff);
+    m->e(row, 0) = c0;
+    m->e(row, 1) = c1;
+    m->e(row, 2) = c2;
 }
 
 
@@ -531,6 +540,10 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
     unsigned long header_length = DEFAULT_MAC_LEN + iplen;
     unsigned long data_length = pb[0]->length()-header_length;
 
+   // TODO; we should be able to use data_length, but it is off by
+   // 12 bytes.  By using Len we see to not be decoding the packet
+   // correctly.
+
     //std::string dst_host = std::string(IPAddress(iph->ip_dst).unparse().mutable_c_str());
     //DEBUG_PRINT("in decode after saftey checks: %s (%u)\n", dst_host.c_str(), pb->first()->length());
 
@@ -539,13 +552,20 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
     const NCAProto *ncapktA = reinterpret_cast<const NCAProto *>(pb[0]->data()+header_length);
     const NCAProto *ncapktB = reinterpret_cast<const NCAProto *>(pb[1]->data()+header_length);
     const NCAProto *ncapktC = reinterpret_cast<const NCAProto *>(pb[2]->data()+header_length);
+    DEBUG_PRINT("packet length: %u, data length of orig: %lu, proto len: %u\n", pb[0]->length(), data_length, ncapktA->Len);
 
     gf_w_state< gf_8_t, gf8_ssse3_state > state = gf_w_state< gf_8_t, gf8_ssse3_state >(_pp, 1);
     gf_matrix< gf_8_t, gf8_ssse3_state > matrix = gf_matrix< gf_8_t, gf8_ssse3_state >(dimension,dimension, state);
 
-    set_row(ncapktA->Equation, 0, matrix);
-    set_row(ncapktB->Equation, 1, matrix);
-    set_row(ncapktC->Equation, 2, matrix);
+    DEBUG_PRINT("A: id: %llu, eq: %llx\n", ncapktA->Id, ncapktA->Equation);
+    DEBUG_PRINT("B: id: %llu, eq: %llx\n", ncapktB->Id, ncapktB->Equation);
+    DEBUG_PRINT("C: id: %llu, eq: %llx\n", ncapktC->Id, ncapktC->Equation);
+    
+    set_row(ncapktA->Equation, ((ncapktA->Equation >> 24) & 0x3), &matrix);
+    set_row(ncapktB->Equation, ((ncapktB->Equation >> 24) & 0x3), &matrix);
+    set_row(ncapktC->Equation, ((ncapktC->Equation >> 24) & 0x3), &matrix);
+
+    matrix.print("decoded matrix");
 
     gf_matrix< gf_8_t, gf8_ssse3_state > inverse = gf_matrix< gf_8_t, gf8_ssse3_state >(dimension,dimension, state);
 
@@ -555,19 +575,20 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
         std::cerr << "something went wrong inverting\n";
     }
 
+    inverse.print("inverted matrix");
 
     std::vector<gf_8_t *> packet_data;
 
     // ensure each packet is the same length
     for (int i = 0; i < dimension; i++) {
         //gf_8_t * data[data_length];
-        gf_8_t * data = new gf_8_t[data_length];
-        memcpy(data, pb[i]->data()+header_length, data_length);
+        gf_8_t * data = new gf_8_t[ncapktA->Len];
+        memcpy(data, pb[i]->data()+header_length, ncapktA->Len);
         packet_data.push_back(data);
     }
 
     unsigned vector_length = vector_length_in_bytes;
-    std::vector<gf_8_t*> uncoded = packet_encoding(packet_data, inverse, state, data_length, vector_length);
+    std::vector<gf_8_t*> uncoded = packet_encoding(packet_data, inverse, state, ncapktA->Len, vector_length);
 
 
     PacketBatch* ppb = 0;

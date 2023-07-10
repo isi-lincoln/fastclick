@@ -22,10 +22,12 @@ struct NCAProto {
     unsigned int Len : 13; // packet length log_2(8000)
     unsigned int Pkts : 8; // up to 256 packets together
     unsigned long long Id: 48; // identifier
-    unsigned long long Equation: 24; // 8 bits per pkt, current version is hard coded to 3 packets
+    // with 3 packets, use 2 bits for row, and 8 bits per symbol
+    unsigned long long Equation: 26; // 8 bits per pkt, current version is hard coded to 3 packets
+    //unsigned int field: 8;
     //unsigned long long PP: 48 // Primative Polynomial
 #elif CLICK_BYTE_ORDER == CLICK_LITTLE_ENDIAN
-    unsigned long long Equation: 24; // 8 bits per pkt, current version is hard coded to 3 packets
+    unsigned long long Equation: 26; // 8 bits per pkt, current version is hard coded to 3 packets
     unsigned long long Id: 48; // identifier
     unsigned int Pkts : 8; // up to 256 packets together
     unsigned int Len : 13; // packet length log_2(8000)
