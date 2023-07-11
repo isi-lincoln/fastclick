@@ -138,6 +138,7 @@ std::vector<gf_8_t*> packet_encoding(
     int max_bytes, int simd_vector_size) {
 
     DEBUG_PRINT("in packet encoding\n");
+    matrix.print("using matrix for coding");
 
     // TODO: also assumes all packets are the same size (max_bytes)
     assert(pb.size() > 0);
@@ -171,7 +172,7 @@ std::vector<gf_8_t*> packet_encoding(
         delete[] enc;
     }
 
-    DEBUG_PRINT("in size of encoded packets: %lu\n", encoded_packets.size());
+    //DEBUG_PRINT("in size of encoded packets: %lu\n", encoded_packets.size());
     return encoded_packets;
 
 }
@@ -198,6 +199,9 @@ gf_matrix< gf_8_t, gf8_ssse3_state> build_rand_matrix(int dimension, gf_w_state<
         std::cerr << "inversion failed, creating new\n";
         return build_rand_matrix(dimension, state);
     }
+
+    matrix.print("final matrix to use.");
+    inverse.print("inverted matrix");
 
     return matrix;
 }
@@ -367,6 +371,18 @@ std::vector<NCAProto*> sub_encode(
         memcpy((void*)(q->data()+t_length), ma, to_add_length);
 
 
+        // DEBUG code
+        pb[i]->set_mac_header(pb[i]->data(), DEFAULT_MAC_LEN);
+        pb[i]->set_network_header(pb[i]->data()+DEFAULT_MAC_LEN, sizeof(click_ip));
+        q->set_mac_header(q->data(), DEFAULT_MAC_LEN);
+        q->set_network_header(q->data()+DEFAULT_MAC_LEN, sizeof(click_ip));
+        const click_ip *iph_p = pb[i]->ip_header();
+        const click_ip *iph_q = q->ip_header();
+        std::string phost = std::string(IPAddress(iph_p->ip_src).unparse().mutable_c_str());
+        std::string qhost = std::string(IPAddress(iph_q->ip_src).unparse().mutable_c_str());
+        DEBUG_PRINT("%s ? %s\n", phost.c_str(), qhost.c_str());
+        // end DEBUG code
+
         //gf_8_t * data[data_length];
         gf_8_t * data = new gf_8_t[total_length];
         memcpy(data, q->data(), total_length);
@@ -385,9 +401,9 @@ std::vector<NCAProto*> sub_encode(
 
     std::vector<gf_8_t*> encoded = packet_encoding(packet_data, matrix, state, total_length, vector_length);
 
-    matrix.print("encoded matrix");
+    //matrix.print("encoded matrix");
 
-    DEBUG_PRINT("on wire: %lu\n", (sizeof(NCAProto)-(NCAPROTO_DATA_LEN-total_length))+DEFAULT_MAC_LEN+iplen);
+    //DEBUG_PRINT("on wire: %lu\n", (sizeof(NCAProto)-(NCAPROTO_DATA_LEN-total_length))+DEFAULT_MAC_LEN+iplen);
 
     for (unsigned counter = 0; counter < packets; counter++) {
         // create our new packet
@@ -396,6 +412,8 @@ std::vector<NCAProto*> sub_encode(
         ncapkt->Len = total_length;
         ncapkt->Pkts = packets;
         memcpy(ncapkt->Data, encoded[counter], total_length);
+
+
 
         // so we have Eq = Row <Counter> [ C0 | C1 | C2 ]
         unsigned long long t = matrix.e(counter,0);
@@ -412,7 +430,6 @@ std::vector<NCAProto*> sub_encode(
         ncadata.push_back(ncapkt);
     }
 
-    DEBUG_PRINT("size of nca data: %lu\n", ncadata.size());
     return ncadata;
 }
 
@@ -535,37 +552,35 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
     }
     int dimension = _links;
 
-    const click_ip *iph = pb[0]->ip_header();
-    unsigned long iplen = iph->ip_hl << 2;
-    unsigned long header_length = DEFAULT_MAC_LEN + iplen;
-    unsigned long data_length = pb[0]->length()-header_length;
-
-   // TODO; we should be able to use data_length, but it is off by
-   // 12 bytes.  By using Len we see to not be decoding the packet
-   // correctly.
-
-    //std::string dst_host = std::string(IPAddress(iph->ip_dst).unparse().mutable_c_str());
-    //DEBUG_PRINT("in decode after saftey checks: %s (%u)\n", dst_host.c_str(), pb->first()->length());
-
     // following from when we encoded our data and put our xor data into
     // the pkt data field, we now need to extract it
-    const NCAProto *ncapktA = reinterpret_cast<const NCAProto *>(pb[0]->data()+header_length);
-    const NCAProto *ncapktB = reinterpret_cast<const NCAProto *>(pb[1]->data()+header_length);
-    const NCAProto *ncapktC = reinterpret_cast<const NCAProto *>(pb[2]->data()+header_length);
-    DEBUG_PRINT("packet length: %u, data length of orig: %lu, proto len: %u\n", pb[0]->length(), data_length, ncapktA->Len);
-
     gf_w_state< gf_8_t, gf8_ssse3_state > state = gf_w_state< gf_8_t, gf8_ssse3_state >(_pp, 1);
     gf_matrix< gf_8_t, gf8_ssse3_state > matrix = gf_matrix< gf_8_t, gf8_ssse3_state >(dimension,dimension, state);
 
-    DEBUG_PRINT("A: id: %llu, eq: %llx\n", ncapktA->Id, ncapktA->Equation);
-    DEBUG_PRINT("B: id: %llu, eq: %llx\n", ncapktB->Id, ncapktB->Equation);
-    DEBUG_PRINT("C: id: %llu, eq: %llx\n", ncapktC->Id, ncapktC->Equation);
-    
-    set_row(ncapktA->Equation, ((ncapktA->Equation >> 24) & 0x3), &matrix);
-    set_row(ncapktB->Equation, ((ncapktB->Equation >> 24) & 0x3), &matrix);
-    set_row(ncapktC->Equation, ((ncapktC->Equation >> 24) & 0x3), &matrix);
+    const click_ip *iph_orig;
 
-    matrix.print("decoded matrix");
+
+    // TODO: assumes _links size = 3
+    std::vector<gf_8_t *> packet_data = {NULL, NULL, NULL};
+    unsigned long data_length = 0;
+    // ensure each packet is the same length
+    for (int i = 0; i < dimension; i++) {
+        const click_ip *iph = pb[i]->ip_header();
+        unsigned long iplen = iph->ip_hl << 2;
+        unsigned long header_length = DEFAULT_MAC_LEN + iplen;
+        const NCAProto *nca = reinterpret_cast<const NCAProto *>(pb[i]->data()+header_length);
+        unsigned position = ((nca->Equation >> 24) & 0x3);
+
+        set_row(nca->Equation, position, &matrix);
+        data_length = nca->Len;
+        iph_orig = iph;
+
+        gf_8_t * data = new gf_8_t[nca->Len];
+        memcpy(data, nca->Data, nca->Len);
+        packet_data[position] = data;
+    }
+
+    unsigned long iplen = iph_orig->ip_hl << 2;
 
     gf_matrix< gf_8_t, gf8_ssse3_state > inverse = gf_matrix< gf_8_t, gf8_ssse3_state >(dimension,dimension, state);
 
@@ -575,20 +590,11 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
         std::cerr << "something went wrong inverting\n";
     }
 
+    matrix.print("decoded matrix");
     inverse.print("inverted matrix");
 
-    std::vector<gf_8_t *> packet_data;
-
-    // ensure each packet is the same length
-    for (int i = 0; i < dimension; i++) {
-        //gf_8_t * data[data_length];
-        gf_8_t * data = new gf_8_t[ncapktA->Len];
-        memcpy(data, pb[i]->data()+header_length, ncapktA->Len);
-        packet_data.push_back(data);
-    }
-
     unsigned vector_length = vector_length_in_bytes;
-    std::vector<gf_8_t*> uncoded = packet_encoding(packet_data, inverse, state, ncapktA->Len, vector_length);
+    std::vector<gf_8_t*> uncoded = packet_encoding(packet_data, inverse, state, data_length, vector_length);
 
 
     PacketBatch* ppb = 0;
@@ -599,33 +605,33 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
         // set the original packet header information
         pkt->set_mac_header(pkt->data(), DEFAULT_MAC_LEN);
         pkt->set_network_header(pkt->data()+DEFAULT_MAC_LEN, sizeof(click_ip));
-
         const click_ip *iph2 = pkt->ip_header();
         int ip_len = ntohs(iph2->ip_len);
         std::string src_host = std::string(IPAddress(iph2->ip_src).unparse().mutable_c_str());
         std::string dst_host = std::string(IPAddress(iph2->ip_dst).unparse().mutable_c_str());
+        std::string end_host = std::string(IPAddress(iph_orig->ip_dst).unparse().mutable_c_str());
+        DEBUG_PRINT("%s -> (%s) ? [%s]\n", src_host.c_str(), dst_host.c_str(), end_host.c_str());
 
-        if (iph->ip_dst != iph2->ip_dst){
+        if (iph_orig->ip_dst != iph2->ip_dst){
             DEBUG_PRINT("packet is bogus, dropping\n");
             pkt->kill();
             continue;
         }
 
-
-        if (!IP_ISFRAG(iph)) {
+        if (!IP_ISFRAG(iph_orig)) {
             if (data_length > (ip_len+DEFAULT_MAC_LEN)) {
                 pkt->take(data_length-(ip_len+DEFAULT_MAC_LEN));
             }
         } else {
             /* From IP Reassembler element code */
             // calculate packet edges
-            int p_off = IP_BYTE_OFF(iph);
-            int p_lastoff = p_off + ntohs(iph->ip_len) - (iph->ip_hl << 2);
+            int p_off = IP_BYTE_OFF(iph_orig);
+            int p_lastoff = p_off + ntohs(iph_orig->ip_len) - (iph_orig->ip_hl << 2);
 
             // check uncommon, but annoying, case: bad length, bad length + offset,
             // or middle fragment length not a multiple of 8 bytes
             if (p_lastoff > 0xFFFF || p_lastoff <= p_off
-                || ((p_lastoff & 7) != 0 && (iph->ip_off & htons(IP_MF)) != 0)
+                || ((p_lastoff & 7) != 0 && (iph_orig->ip_off & htons(IP_MF)) != 0)
                 || data_length < p_lastoff - p_off) {
                 pkt->kill();
                 continue;
@@ -635,7 +641,6 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
                 pkt->take(data_length - (p_lastoff - p_off));
             }
         }
-
 
         // update the ip header checksum for the next host in the path
         ip_checksum_update_nca(pkt);
@@ -747,14 +752,19 @@ void NCAMsg::push_batch(int ports, PacketBatch *pb){
 
                     memcpy(ma, vp[0], header_length);
                     fill_packet_rand(ma+header_length, temp_length-header_length);
+                    pkt->set_mac_header(pkt->data(), DEFAULT_MAC_LEN);
+                    pkt->set_network_header(pkt->data()+DEFAULT_MAC_LEN, sizeof(click_ip));
 
                     vp.push_back(pkt);
                 }
+
+                DEBUG_PRINT("created %d fake packets\n", pkts_to_generate);
+
             }
 
             while(vp.size() > 0) {
                 DEBUG_PRINT("encode many, size: %lu\n", vp.size());
-                // create a new packetbatch for encode from the first 3 packets
+                // create a new packetbatch for  from the first 3 packets
                 // in vector
                 std::vector<Packet*> new_pb(vp.begin(), vp.begin()+_links);
 
@@ -822,8 +832,8 @@ void NCAMsg::push_batch(int ports, PacketBatch *pb){
                     continue;
                 }
         
-                const NCAProto *xorpkt = reinterpret_cast<const NCAProto *>(p->data()+header_length);
-                unsigned long long clusterid = xorpkt->Id;
+                const NCAProto *ncapkt = reinterpret_cast<const NCAProto *>(p->data()+header_length);
+                unsigned long long clusterid = ncapkt->Id;
  
                 sym_map[clusterid].push_back(p);
             }
