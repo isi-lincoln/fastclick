@@ -1,4 +1,4 @@
-#define DEBUG 1
+//#define DEBUG 1
 #ifdef DEBUG
 #define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
@@ -109,18 +109,6 @@ static inline __m128i gf8_mult_const_16 (__m128i v, __m128i ltbl, __m128i htbl) 
 
 
 /*
-std::pair<gf_8_t *, long> packet_to_data_bytes(Packet* p){
-    unsigned long header_length = DEFAULT_MAC_LEN + iplen;
-    long data_length = p->length()-header_length;
-    gf_8_t * data;
-    memcpy(data, p->data()+header_length, data_length);
-    return std::make_pair(data, data_length);
-}
-*/
-
-
-
-/*
  * packet encoding function works as both the encode and decoding
  * of a packet.
  * inputs:
@@ -138,7 +126,10 @@ std::vector<gf_8_t*> packet_encoding(
     int max_bytes, int simd_vector_size) {
 
     DEBUG_PRINT("in packet encoding\n");
+
+#ifdef DEBUG
     matrix.print("using matrix for coding");
+#endif
 
     // TODO: also assumes all packets are the same size (max_bytes)
     assert(pb.size() > 0);
@@ -200,8 +191,12 @@ gf_matrix< gf_8_t, gf8_ssse3_state> build_rand_matrix(int dimension, gf_w_state<
         return build_rand_matrix(dimension, state);
     }
 
+#ifdef DEBUG
     matrix.print("final matrix to use.");
     inverse.print("inverted matrix");
+#endif
+
+    //inverse.~gf_matrix();
 
     return matrix;
 }
@@ -310,9 +305,10 @@ void NCAMsg::send_packets(
 
 // generate a random number between current and max and make sure modulo vector size
 long add_padding(unsigned long max, unsigned long current, unsigned long vector) {
+    DEBUG_PRINT("max: %lu, current: %lu, vector: %lu\n", max, current, vector);
     assert(max-vector > current);
     std::uniform_int_distribution< unsigned long > pad(current, max-vector);
-    unsigned long tmp = pad(enger) + current;
+    unsigned long tmp = pad(enger);
     if (tmp % vector != 0) {
         unsigned long added = tmp % vector;
         DEBUG_PRINT("tmp: %lu, vector: %lu, added: %lu\n", tmp, vector, added);
@@ -338,7 +334,7 @@ std::vector<NCAProto*> sub_encode(
     unsigned packets = pb.size();
 
     // adds random data to the end of each packet
-    unsigned long total_length = add_padding(mtu-500, longest, vector_length);
+    unsigned long total_length = add_padding(mtu, longest, vector_length);
     DEBUG_PRINT("total length: %lu\n", total_length);
 
     const click_ip *iph = pb[0]->ip_header();
@@ -361,31 +357,11 @@ std::vector<NCAProto*> sub_encode(
         char* ma[to_add_length];
         fill_packet_rand(ma, to_add_length);
 
-        // add to the end of the packet, the difference
-        // each packet is now total_length in size.
-        WritablePacket * q = pb[i]->put(to_add_length);
-        if (!q) {
-            DEBUG_PRINT("bad packet put\n");
-            return ncadata;
-        }
-        memcpy((void*)(q->data()+t_length), ma, to_add_length);
-
-
-        // DEBUG code
-        pb[i]->set_mac_header(pb[i]->data(), DEFAULT_MAC_LEN);
-        pb[i]->set_network_header(pb[i]->data()+DEFAULT_MAC_LEN, sizeof(click_ip));
-        q->set_mac_header(q->data(), DEFAULT_MAC_LEN);
-        q->set_network_header(q->data()+DEFAULT_MAC_LEN, sizeof(click_ip));
-        const click_ip *iph_p = pb[i]->ip_header();
-        const click_ip *iph_q = q->ip_header();
-        std::string phost = std::string(IPAddress(iph_p->ip_src).unparse().mutable_c_str());
-        std::string qhost = std::string(IPAddress(iph_q->ip_src).unparse().mutable_c_str());
-        DEBUG_PRINT("%s ? %s\n", phost.c_str(), qhost.c_str());
-        // end DEBUG code
-
         //gf_8_t * data[data_length];
         gf_8_t * data = new gf_8_t[total_length];
-        memcpy(data, q->data(), total_length);
+
+        memcpy(data, pb[i]->data(), pb[i]->length());
+        memcpy(data+pb[i]->length(), ma, to_add_length);
         packet_data.push_back(data);
     }
 
@@ -401,6 +377,11 @@ std::vector<NCAProto*> sub_encode(
 
     std::vector<gf_8_t*> encoded = packet_encoding(packet_data, matrix, state, total_length, vector_length);
 
+    for (auto i: packet_data){
+        delete i;
+    }
+    //matrix.~gf_matrix();
+
     //matrix.print("encoded matrix");
 
     //DEBUG_PRINT("on wire: %lu\n", (sizeof(NCAProto)-(NCAPROTO_DATA_LEN-total_length))+DEFAULT_MAC_LEN+iplen);
@@ -412,8 +393,7 @@ std::vector<NCAProto*> sub_encode(
         ncapkt->Len = total_length;
         ncapkt->Pkts = packets;
         memcpy(ncapkt->Data, encoded[counter], total_length);
-
-
+        delete encoded[counter];
 
         // so we have Eq = Row <Counter> [ C0 | C1 | C2 ]
         unsigned long long t = matrix.e(counter,0);
@@ -429,6 +409,7 @@ std::vector<NCAProto*> sub_encode(
 
         ncadata.push_back(ncapkt);
     }
+
 
     return ncadata;
 }
@@ -590,17 +571,25 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
         std::cerr << "something went wrong inverting\n";
     }
 
+#ifdef DEBUG
     matrix.print("decoded matrix");
     inverse.print("inverted matrix");
+#endif
 
     unsigned vector_length = vector_length_in_bytes;
     std::vector<gf_8_t*> uncoded = packet_encoding(packet_data, inverse, state, data_length, vector_length);
 
+    for (auto i: packet_data){
+        delete i;
+    }
+    //matrix.~gf_matrix();
+    //inverse.~gf_matrix();
 
     PacketBatch* ppb = 0;
     for ( int i = 0; i < uncoded.size(); i++) {
         WritablePacket *pkt = Packet::make(data_length);
         memcpy((void*)pkt->data(), uncoded[i], data_length);
+        delete uncoded[i];
 
         // set the original packet header information
         pkt->set_mac_header(pkt->data(), DEFAULT_MAC_LEN);
@@ -652,6 +641,7 @@ void NCAMsg::decode(int ports, std::vector<Packet*> pb) {
         }
 
     }
+
 
     // ship it, we've put them all in a batch to reduce whatever latency
     // is cause by shiping out the interface
