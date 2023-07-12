@@ -25,8 +25,6 @@ Generates a SSS Msg packet using an IPv4 packet as input.
 The input packet data must be a valid IPv4 packet.
 */
 
-const unsigned func_encrypt = 0;
-const unsigned func_decrypt = 1;
 
 class SSSMsg : public BatchElement {
     int headroom = sizeof(click_ether);
@@ -35,6 +33,9 @@ class SSSMsg : public BatchElement {
     uint8_t _function; // encode / decode
     uint32_t _timer; // when handling time outs or timer-based actions
     uint32_t _mtu; // max MTU of link - otherwise we need to fragment
+    int _pkt_size; // size of packets
+    const unsigned func_encrypt = 0;
+    const unsigned func_decrypt = 1;
 
     public:
         SSSMsg();

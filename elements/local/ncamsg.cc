@@ -323,7 +323,7 @@ long add_padding(unsigned long max, unsigned long current, unsigned long vector)
  * Handles the incoming packets to be coded together (XOR)
 */
 std::vector<NCAProto*> sub_encode(
-    std::vector<Packet*> pb, unsigned long longest, unsigned long mtu, uint32_t pp
+    std::vector<Packet*> pb, unsigned long longest, unsigned long mtu, uint32_t pp, int ps
 ) {
 
     DEBUG_PRINT("in sub encode, num packets: %lu\n", pb.size());
@@ -334,7 +334,24 @@ std::vector<NCAProto*> sub_encode(
     unsigned packets = pb.size();
 
     // adds random data to the end of each packet
-    unsigned long total_length = add_padding(mtu, longest, vector_length);
+    unsigned long total_length;
+    if (ps < 0){
+        total_length = add_padding(mtu, longest, vector_length);
+    } else if (ps = 0) {
+        if (longest % vector_length != 0) {
+            unsigned int added = longest % vector_length;
+            total_length = longest+(vector_length-added);
+        } else {
+            total_length = longest;
+        }
+    } else {
+        if (ps % vector_length != 0) {
+            unsigned int added = ps % vector_length;
+            total_length = ps+(vector_length-added);
+        } else {
+            total_length = ps;
+        }
+    }
     DEBUG_PRINT("total length: %lu\n", total_length);
 
     const click_ip *iph = pb[0]->ip_header();
@@ -419,12 +436,14 @@ int NCAMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     uint8_t links;
     uint8_t function;
     unsigned long timer; 
-    unsigned long mtu; 
+    unsigned long mtu; // in bytes
+    unsigned long pkt_size; // in bytes
     if (Args(conf, this, errh)
         .read_mp("LINKS", links) // positional
         .read_mp("PURPOSE", function) // positional
         .read_mp("TIMER", timer) // positional
         .read_mp("MTU", mtu) // positional
+        .read_mp("PACKET", pkt_size) // positional
         .complete() < 0){
             fprintf(stderr, "Click configure failed.\n");
             return -1;
@@ -448,6 +467,7 @@ int NCAMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 
     _links = links;
     _function = function;
+    _pkt_size = pkt_size;
 
     _threads = click_max_cpu_ids();
 
@@ -456,27 +476,29 @@ int NCAMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
         DEBUG_PRINT("enabling %u decode threads.\n", new_threads);
         //for (unsigned i = 0; i < new_threads; i++) {
         for (unsigned i = 0; i < 1; i++) {
+            State &s = _state.get_value_for_thread(i);
             // Task Code
-            State &s = _state.get_value_for_thread(i);
-            s.tasks = new Task(this);
-            s.tasks->initialize(this,true);
-            s.tasks->move_thread(i);
-            // Timer Code
-            /*
-            State &s = _state.get_value_for_thread(i);
-            s.timers = new Timer(this);
-            s.timers->initialize(this,true);
-            //s.timers->schedule_now();
-            float timer_offset = (_timer / new_threads)*i;
-            DEBUG_PRINT("starting thread %u in %d ms.\n", i, (int)floor(timer_offset));
-            s.timers->reschedule_after_msec((int)floor(timer_offset));
-            s.timers->move_thread(i);
-            */
+            if (_timer == 0) {
+                s.tasks = new Task(this);
+                s.tasks->initialize(this,true);
+                s.tasks->move_thread(i);
+            } else {
+                s.timers = new Timer(this);
+                s.timers->initialize(this,true);
+                float timer_offset = (_timer / new_threads)*i;
+                s.timers->reschedule_after_msec((int)floor(timer_offset));
+                s.timers->move_thread(i);
+                DEBUG_PRINT("starting thread %u in %d ms.\n", i, (int)floor(timer_offset));
+            }
         }
     }
-    
 
-    fprintf(stdout, "Click: timer lantency set to %lu ms.\n", _timer);
+
+    if (_timer > 0) {
+        fprintf(stdout, "Click: timer lantency set to %lu ms.\n", _timer);
+    } else {
+        fprintf(stdout, "Click: using task threads\n");
+    }
 
     return 0;
 }
@@ -497,7 +519,7 @@ void NCAMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
     unsigned long longest = *std::max_element(lengths.begin(), lengths.end());
     DEBUG_PRINT("longest element: %lu\n", longest);
 
-    std::vector<NCAProto*> nca_pkts = sub_encode(pb, longest, _mtu, _pp);
+    std::vector<NCAProto*> nca_pkts = sub_encode(pb, longest, _mtu, _pp, _pkt_size);
     DEBUG_PRINT("sub encode complete\n");
     send_packets(nca_pkts, pb[0]->network_header(), pb[0]->mac_header(), dst);
     DEBUG_PRINT("send packets complete\n");

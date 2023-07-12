@@ -33,7 +33,9 @@ The input packet data must be a valid IPv4 packet.
 
 class NCAMsg : public BatchElement {
 
-    uint8_t _links;
+    // TODO: initialization of protocol
+    // should handshake these values
+    uint8_t _links = 3;
     uint32_t _pp = 0x11d;
 
     // 0: encode, 1: decode
@@ -41,7 +43,7 @@ class NCAMsg : public BatchElement {
     const unsigned func_encode = 0;
     const unsigned func_decode = 1;
 
-    // timer for each time check
+    // timer for each time check or use task
     unsigned long _timer;
 
     // mtu of each link if known prior
@@ -49,6 +51,10 @@ class NCAMsg : public BatchElement {
 
     // threads
     unsigned _threads;
+
+    // packet size
+    // 0 = do nothing, - = means random, + means fixed length
+    int _pkt_size;
 
     public:
         NCAMsg();

@@ -59,6 +59,20 @@ CLICK_DECLS
 SSSMsg::SSSMsg() { };
 SSSMsg::~SSSMsg() { };
 
+FILE* FDDD = fopen("/dev/urandom", "rb");
+
+// create a memory buffer the size of length filled by urand
+void fill_packet_rand2(void* buffer, unsigned long long length) {
+    if ( FDDD == NULL) {
+        fprintf(stderr, "failed to open file.\n");
+        exit(1);
+    }
+    size_t res = fread(buffer, sizeof(char), length, FDDD);
+    if (res != length) {
+        fprintf(stderr, "populate packet failed to read length random bytes.\n");
+    }
+}
+
 std::vector<std::string> SSSMsg::SplitData(int threshold, int nShares, std::string secret) {
 
     // rng
@@ -142,12 +156,14 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     uint8_t function;
     uint32_t timer;
     uint32_t mtu;
+    unsigned long pkt_size; // in bytes
     if (Args(conf, this, errh)
         .read_mp("SHARES", shares) // positional
         .read_mp("THRESHOLD", threshold) // positional
         .read_mp("FUNCTION", function) // positional
         .read_mp("TIMER", timer) // positional
         .read_mp("MTU", mtu) // positional
+        .read_mp("PACKET", pkt_size) // positional
         .complete() < 0){
             return -1;
     }
@@ -172,22 +188,25 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 
     int _threads = click_max_cpu_ids();
 
-    if (_function == func_decode) {
-        DEBUG_PRINT("enabling %u threads.\n", _threads);
-        //for (unsigned i = 0; i < _threads; i++) {
+    if (_function == func_decrypt) {
+        unsigned new_threads = _threads;
+        DEBUG_PRINT("enabling %u decode threads.\n", new_threads);
+        //for (unsigned i = 0; i < new_threads; i++) {
         for (unsigned i = 0; i < 1; i++) {
+            State &s = _state.get_value_for_thread(i);
             // Task Code
-            State &s = _state.get_value_for_thread(i);
-            s.tasks = new Task(this);
-            s.tasks->initialize(this,true);
-            s.tasks->move_thread(i);
-            // Timer Code
-            /*
-            State &s = _state.get_value_for_thread(i);
-            s.timers = new Timer(this);
-            s.timers->initialize(this,true);
-            s.tasks->move_thread(i);
-            */
+            if (_timer == 0) {
+                s.tasks = new Task(this);
+                s.tasks->initialize(this,true);
+                s.tasks->move_thread(i);
+            } else {
+                s.timers = new Timer(this);
+                s.timers->initialize(this,true);
+                float timer_offset = (_timer / new_threads)*i;
+                s.timers->reschedule_after_msec((int)floor(timer_offset));
+                s.timers->move_thread(i);
+                DEBUG_PRINT("starting thread %u in %d ms.\n", i, (int)floor(timer_offset));
+            }
         }
     }
 
@@ -292,7 +311,17 @@ bool SSSMsg::run_task(Task *task) {
 
 void SSSMsg::encrypt2(Packet *p) {
     DEBUG_PRINT("encrypt 2\n");
-    unsigned long total_length = p->length();
+    unsigned long total_length;
+    if (_pkt_size < 0){
+        std::uniform_int_distribution< unsigned long > pad(p->length(), _mtu);
+        total_length = pad(eng2);
+    } else if (_pkt_size = 0) {
+        total_length = p->length();
+    } else {
+        total_length = _pkt_size;
+    }
+    DEBUG_PRINT("total length: %lu\n", total_length);
+
     const unsigned char *nh = p->network_header();
     const unsigned char *mh = p->mac_header();
     const click_ip *iph = p->ip_header();
@@ -302,6 +331,10 @@ void SSSMsg::encrypt2(Packet *p) {
     uint64_t flowid = get_64_rand2();
 
     std::string str_data(reinterpret_cast<const char *>(p->data()), p->length());
+    char ma[total_length-p->length()];
+    fill_packet_rand2(&ma, total_length-p->length());
+    std::string filler(ma, total_length-p->length());
+    str_data += filler;
 
     //DEBUG_PRINT("encoding\n");
     std::vector<std::string> encoded = SSSMsg::SplitData(_threshold, _shares, str_data);
@@ -462,13 +495,13 @@ void SSSMsg::push_batch(int ports, PacketBatch *pb) {
         }
     }
 
-    if (_function == func_encode) {
+    if (_function == func_encrypt) {
         DEBUG_PRINT("calling encrypt\n");
         for (auto p: vpb){
             encrypt2(p);
             p->kill();
         }
-    } else if (_function == func_decode) {
+    } else if (_function == func_decrypt) {
         for (auto p: vpb){
             const click_ip *iph = p->ip_header();
             unsigned long iplen = iph->ip_hl << 2;

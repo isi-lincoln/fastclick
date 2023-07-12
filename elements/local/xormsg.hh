@@ -30,13 +30,13 @@ Generates a XOR Msg packet using an IPv4 packet as input.
 The input packet data must be a valid IPv4 packet.
 */
 
-const unsigned func_encode = 0;
-const unsigned func_decode = 1;
 
 class XORMsg : public BatchElement {
 
     // 0: encode, 1: decode
     uint8_t _function;
+    const unsigned func_encode = 0;
+    const unsigned func_decode = 1;
 
     // symbols to use (assume 3 minimum)
     uint8_t _symbols;
@@ -49,6 +49,10 @@ class XORMsg : public BatchElement {
 
     // threads
     unsigned _threads;
+
+    // packet size
+    // 0 = do nothing, - = means random, + means fixed length
+    int _pkt_size;
 
     public:
         XORMsg();

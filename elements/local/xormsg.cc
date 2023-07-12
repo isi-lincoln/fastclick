@@ -93,6 +93,25 @@ char* populate_packet(void* buffer, unsigned long long length) {
     return (char*)buffer;
 }
 
+// generate a random number between current and max and make sure modulo vector size
+long padding_to_add(unsigned long max, unsigned long current, unsigned long vector) {
+    DEBUG_PRINT("max: %lu, current: %lu, vector: %lu\n", max, current, vector);
+    assert(max-vector > current);
+    std::uniform_int_distribution< unsigned long > pad(current, max-vector);
+    unsigned long tmp = pad(eng);
+    if (tmp % vector != 0) {
+        unsigned long added = tmp % vector;
+        DEBUG_PRINT("tmp: %lu, vector: %lu, added: %lu\n", tmp, vector, added);
+        tmp = tmp + (vector-added);
+    }
+    DEBUG_PRINT("padding value: %lu to current: %lu\n", tmp, current);
+    return tmp;
+}
+
+
+
+
+
 // work horse for all functions that need to send a packet.
 // requires having a L3 (nh) and L2 (mh) header to overwrite before sending the packet.
 // because XOR only handles the data of the packet, we need to have an unspoiled header.
@@ -147,35 +166,35 @@ void XORMsg::send_packets(
  * Handles the incoming packets to be coded together (XOR)
 */
 std::vector<XORProto*> sub_encode(
-    std::vector<Packet*> pb, unsigned symbols, unsigned long longest, unsigned long mtu
+    std::vector<Packet*> pb, unsigned symbols, unsigned long longest, unsigned long mtu, int ps
 ) {
     if (pb.size() != symbols) {
         fprintf(stderr, "number of packets should be equal to symbols.\n");
         return {};
     }
 
-    // rand_length just adds some data to the end of the packets to distort
-    // distribution sizes.  Since the original packet will include the actual
-    // packet length, the padded data will be removed by kernel (or decode).
-    unsigned long total_length = longest;
-
     // vector can either be 16 byte for SSE/SSSE or 32 for AVX/2
     unsigned int vector_length = 16;
 
-    // TODO: redo this code to actually add padding of good quality
-    // TODO: integrate mtu
-    if (longest % vector_length != 0) {
-        unsigned int added = longest % vector_length;
-        total_length = longest+(vector_length-added);
+    // adds random data to the end of each packet
+    unsigned long total_length;
+    if (ps < 0){
+        total_length = padding_to_add(mtu, longest, vector_length);
+    } else if (ps = 0) {
+        if (longest % vector_length != 0) {
+            unsigned int added = longest % vector_length;
+            total_length = longest+(vector_length-added);
+        } else {
+            total_length = longest;
+        }
+    } else {
+        if (ps % vector_length != 0) {
+            unsigned int added = ps % vector_length;
+            total_length = ps+(vector_length-added);
+        } else {
+            total_length = ps;
+        }
     }
-
-    /*
-    // TODO: this seems to prevent tcp from working
-    if (longest > mtu) {
-        fprintf(stderr, "packets exceed mtu size.\n");
-        return {};
-    }
-    */
 
     //DEBUG_PRINT("array: %u, longest: %lu, with padding: %lu\n", pb->count(), longest, total_length);
 
@@ -263,11 +282,13 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     uint8_t function;
     unsigned long timer; 
     unsigned long mtu; 
+    int pkt_size;
     if (Args(conf, this, errh)
         .read_mp("SYMBOLS", symbols) // positional
         .read_mp("PURPOSE", function) // positional
         .read_mp("TIMER", timer) // positional
         .read_mp("MTU", mtu) // positional
+        .read_mp("PACKET", pkt_size) // positional
         .complete() < 0){
             fprintf(stderr, "Click configure failed.\n");
             return -1;
@@ -291,30 +312,28 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 
     _symbols = symbols;
     _function = function;
+    _pkt_size = pkt_size;
 
     _threads = click_max_cpu_ids();
 
     if (_function == func_decode) {
         unsigned new_threads = _threads;
         DEBUG_PRINT("enabling %u decode threads.\n", new_threads);
-        //for (unsigned i = 0; i < new_threads; i++) {
         for (unsigned i = 0; i < 1; i++) {
+            State &s = _state.get_value_for_thread(i);
             // Task Code
-            State &s = _state.get_value_for_thread(i);
-            s.tasks = new Task(this);
-            s.tasks->initialize(this,true);
-            s.tasks->move_thread(i);
-            // Timer Code
-            /*
-            State &s = _state.get_value_for_thread(i);
-            s.timers = new Timer(this);
-            s.timers->initialize(this,true);
-            //s.timers->schedule_now();
-            float timer_offset = (_timer / new_threads)*i;
-            DEBUG_PRINT("starting thread %u in %d ms.\n", i, (int)floor(timer_offset));
-            s.timers->reschedule_after_msec((int)floor(timer_offset));
-            s.timers->move_thread(i);
-            */
+            if (_timer == 0) {
+                s.tasks = new Task(this);
+                s.tasks->initialize(this,true);
+                s.tasks->move_thread(i);
+            } else {
+                s.timers = new Timer(this);
+                s.timers->initialize(this,true);
+                float timer_offset = (_timer / new_threads)*i;
+                s.timers->reschedule_after_msec((int)floor(timer_offset));
+                s.timers->move_thread(i);
+                DEBUG_PRINT("starting thread %u in %d ms.\n", i, (int)floor(timer_offset));
+            }
         }
     }
     
@@ -340,7 +359,7 @@ void XORMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
     unsigned long longest = *std::max_element(lengths.begin(), lengths.end());
     //DEBUG_PRINT("longest element: %lu\n", longest);
 
-    std::vector<XORProto*> xor_pkts = sub_encode(pb, _symbols, longest, _mtu);
+    std::vector<XORProto*> xor_pkts = sub_encode(pb, _symbols, longest, _mtu, _pkt_size);
     send_packets(xor_pkts, pb[0]->network_header(), pb[0]->mac_header(), dst);
 
     /*
