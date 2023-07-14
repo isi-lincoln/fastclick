@@ -156,7 +156,7 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     uint8_t function;
     uint32_t timer;
     uint32_t mtu;
-    unsigned long pkt_size; // in bytes
+    int pkt_size; // in bytes
     if (Args(conf, this, errh)
         .read_mp("SHARES", shares) // positional
         .read_mp("THRESHOLD", threshold) // positional
@@ -315,7 +315,7 @@ void SSSMsg::encrypt2(Packet *p) {
     if (_pkt_size < 0){
         std::uniform_int_distribution< unsigned long > pad(p->length(), _mtu);
         total_length = pad(eng2);
-    } else if (_pkt_size = 0) {
+    } else if (_pkt_size == 0) {
         total_length = p->length();
     } else {
         total_length = _pkt_size;

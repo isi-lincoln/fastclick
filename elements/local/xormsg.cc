@@ -180,7 +180,7 @@ std::vector<XORProto*> sub_encode(
     unsigned long total_length;
     if (ps < 0){
         total_length = padding_to_add(mtu, longest, vector_length);
-    } else if (ps = 0) {
+    } else if (ps == 0) {
         if (longest % vector_length != 0) {
             unsigned int added = longest % vector_length;
             total_length = longest+(vector_length-added);

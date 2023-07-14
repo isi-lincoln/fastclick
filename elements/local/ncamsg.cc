@@ -1,4 +1,4 @@
-//#define DEBUG 1
+#define DEBUG 1
 #ifdef DEBUG
 #define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
@@ -326,7 +326,7 @@ std::vector<NCAProto*> sub_encode(
     std::vector<Packet*> pb, unsigned long longest, unsigned long mtu, uint32_t pp, int ps
 ) {
 
-    DEBUG_PRINT("in sub encode, num packets: %lu\n", pb.size());
+    DEBUG_PRINT("in sub encode, num packets: %lu, packet setting: %d\n", pb.size()), ps;
     assert(pb.size() > 0);
 
     std::vector<NCAProto*> ncadata;
@@ -337,7 +337,7 @@ std::vector<NCAProto*> sub_encode(
     unsigned long total_length;
     if (ps < 0){
         total_length = add_padding(mtu, longest, vector_length);
-    } else if (ps = 0) {
+    } else if (ps == 0) {
         if (longest % vector_length != 0) {
             unsigned int added = longest % vector_length;
             total_length = longest+(vector_length-added);
@@ -366,6 +366,7 @@ std::vector<NCAProto*> sub_encode(
     for (int i = 0; i < packets; i++) {
         // get length of this packet
         unsigned long t_length = pb[i]->length();
+        DEBUG_PRINT("total length: %lu, pkt length: %lu\n", total_length, t_length);
         assert(total_length >= t_length);
         unsigned long to_add_length = total_length - t_length;
         DEBUG_PRINT("to add length: %lu\n", to_add_length);
@@ -437,7 +438,7 @@ int NCAMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     uint8_t function;
     unsigned long timer; 
     unsigned long mtu; // in bytes
-    unsigned long pkt_size; // in bytes
+    int pkt_size; // in bytes
     if (Args(conf, this, errh)
         .read_mp("LINKS", links) // positional
         .read_mp("PURPOSE", function) // positional
