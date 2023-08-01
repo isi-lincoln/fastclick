@@ -185,6 +185,7 @@ int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     _function = function;
     _timer = timer;
     _mtu = mtu;
+    _pkt_size = pkt_size;
 
     int _threads = click_max_cpu_ids();
 
@@ -320,7 +321,7 @@ void SSSMsg::encrypt2(Packet *p) {
     } else {
         total_length = _pkt_size;
     }
-    DEBUG_PRINT("total length: %lu\n", total_length);
+    DEBUG_PRINT("size select: %d, original: %u, mtu: %u, new length: %lu\n", _pkt_size, p->length(), _mtu, total_length);
 
     const unsigned char *nh = p->network_header();
     const unsigned char *mh = p->mac_header();

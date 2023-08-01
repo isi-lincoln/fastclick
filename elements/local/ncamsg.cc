@@ -326,7 +326,7 @@ std::vector<NCAProto*> sub_encode(
     std::vector<Packet*> pb, unsigned long longest, unsigned long mtu, uint32_t pp, int ps
 ) {
 
-    DEBUG_PRINT("in sub encode, num packets: %lu, packet setting: %d\n", pb.size()), ps;
+    DEBUG_PRINT("in sub encode, num packets: %lu, packet setting: %d\n", pb.size(), ps);
     assert(pb.size() > 0);
 
     std::vector<NCAProto*> ncadata;
