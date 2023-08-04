@@ -224,9 +224,8 @@ void ip_checksum_update_sss(WritablePacket *p) {
     iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
 }
 
-int check_sss_packet_header(Packet *p) {
-    // TODO: packet length bounds check.
-    if (p->length() > 8000) {
+int check_sss_packet_header(Packet *p, long mtu) {
+    if (p->length() > mtu) {
         fprintf(stderr, "packet is too large for link\n");
         return -1;
     }
@@ -487,7 +486,7 @@ void SSSMsg::push_batch(int ports, PacketBatch *pb) {
     DEBUG_PRINT("push_batch\n");
     std::vector<Packet*> vpb;
     FOR_EACH_PACKET_SAFE(pb,p){
-        int rc = check_sss_packet_header(p);
+        int rc = check_sss_packet_header(p, _mtu);
         if (rc < 0) {
             p->kill();
         } else {
