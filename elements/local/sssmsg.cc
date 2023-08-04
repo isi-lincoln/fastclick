@@ -225,7 +225,7 @@ void ip_checksum_update_sss(WritablePacket *p) {
 }
 
 int check_sss_packet_header(Packet *p, long mtu) {
-    if (p->length() > mtu) {
+    if (p->length() > 8000) {
         fprintf(stderr, "packet is too large for link\n");
         return -1;
     }

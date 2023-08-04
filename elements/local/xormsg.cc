@@ -109,8 +109,6 @@ long padding_to_add(unsigned long max, unsigned long current, unsigned long vect
 
 
 
-
-
 // work horse for all functions that need to send a packet.
 // requires having a L3 (nh) and L2 (mh) header to overwrite before sending the packet.
 // because XOR only handles the data of the packet, we need to have an unspoiled header.
@@ -572,7 +570,7 @@ int XORMsg::initialize(ErrorHandler *errh) {
 
 
 int check_packet_header(Packet *p, long mtu) {
-    if (p->length() > mtu) {
+    if (p->length() > 8000) {
         fprintf(stderr, "packet is too large for link\n");
         return -1;
     }
