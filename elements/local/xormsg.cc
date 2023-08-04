@@ -96,8 +96,7 @@ char* populate_packet(void* buffer, unsigned long long length) {
 // generate a random number between current and max and make sure modulo vector size
 long padding_to_add(unsigned long max, unsigned long current, unsigned long vector) {
     DEBUG_PRINT("max: %lu, current: %lu, vector: %lu\n", max, current, vector);
-    assert(max-vector >= current);
-    std::uniform_int_distribution< unsigned long > pad(current, max-vector);
+    std::uniform_int_distribution< unsigned long > pad(current, max);
     unsigned long tmp = pad(eng);
     if (tmp % vector != 0) {
         unsigned long added = tmp % vector;
@@ -572,9 +571,8 @@ int XORMsg::initialize(ErrorHandler *errh) {
 }
 
 
-int check_packet_header(Packet *p) {
-    // TODO: packet length bounds check.
-    if (p->length() > 8000) {
+int check_packet_header(Packet *p, long mtu) {
+    if (p->length() > mtu) {
         fprintf(stderr, "packet is too large for link\n");
         return -1;
     }
@@ -621,7 +619,7 @@ void XORMsg::push_batch(int ports, PacketBatch *pb){
         // and then add it to the local ip_dst map
         for (auto it = vpb.begin(); it != vpb.end(); it++){
             Packet* p = *it;
-            int rc = check_packet_header(p);
+            int rc = check_packet_header(p, _mtu);
             if (rc < 0) {
                 vpb.erase(it--); // erase current element
                 continue;
@@ -700,7 +698,7 @@ void XORMsg::push_batch(int ports, PacketBatch *pb){
         // and then add it to the local ip_dst map
         for (auto it = vpb.begin(); it != vpb.end(); it++){
             Packet* p = *it;
-            int rc = check_packet_header(p);
+            int rc = check_packet_header(p, _mtu);
             if (rc < 0) {
                 vpb.erase(it--); // erase current element
                 if (p) {

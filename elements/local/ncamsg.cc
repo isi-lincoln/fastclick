@@ -306,8 +306,7 @@ void NCAMsg::send_packets(
 // generate a random number between current and max and make sure modulo vector size
 long add_padding(unsigned long max, unsigned long current, unsigned long vector) {
     DEBUG_PRINT("max: %lu, current: %lu, vector: %lu\n", max, current, vector);
-    assert(max-vector >= current);
-    std::uniform_int_distribution< unsigned long > pad(current, max-vector);
+    std::uniform_int_distribution< unsigned long > pad(current, max);
     unsigned long tmp = pad(enger);
     if (tmp % vector != 0) {
         unsigned long added = tmp % vector;
@@ -679,7 +678,7 @@ int NCAMsg::initialize(ErrorHandler *errh) {
 }
 
 
-int ensure_packet_header(Packet *p) {
+int ensure_packet_header(Packet *p, long mtu) {
     // TODO: packet length bounds check.
     if (p->length() > 8000) {
         fprintf(stderr, "packet is too large for link\n");
@@ -729,7 +728,7 @@ void NCAMsg::push_batch(int ports, PacketBatch *pb){
         // and then add it to the local ip_dst map
         for (auto it = vpb.begin(); it != vpb.end(); it++){
             Packet* p = *it;
-            int rc = ensure_packet_header(p);
+            int rc = ensure_packet_header(p, _mtu);
             if (rc < 0) {
                 vpb.erase(it--); // erase current element
                 continue;
@@ -813,7 +812,7 @@ void NCAMsg::push_batch(int ports, PacketBatch *pb){
         // and then add it to the local ip_dst map
         for (auto it = vpb.begin(); it != vpb.end(); it++){
             Packet* p = *it;
-            int rc = ensure_packet_header(p);
+            int rc = ensure_packet_header(p, _mtu);
             if (rc < 0) {
                 vpb.erase(it--); // erase current element
                 if (p) {
