@@ -96,7 +96,7 @@ char* populate_packet(void* buffer, unsigned long long length) {
 // generate a random number between current and max and make sure modulo vector size
 long padding_to_add(unsigned long max, unsigned long current, unsigned long vector) {
     DEBUG_PRINT("max: %lu, current: %lu, vector: %lu\n", max, current, vector);
-    assert(max-vector > current);
+    assert(max-vector >= current);
     std::uniform_int_distribution< unsigned long > pad(current, max-vector);
     unsigned long tmp = pad(eng);
     if (tmp % vector != 0) {

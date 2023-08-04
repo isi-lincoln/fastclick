@@ -306,7 +306,7 @@ void NCAMsg::send_packets(
 // generate a random number between current and max and make sure modulo vector size
 long add_padding(unsigned long max, unsigned long current, unsigned long vector) {
     DEBUG_PRINT("max: %lu, current: %lu, vector: %lu\n", max, current, vector);
-    assert(max-vector > current);
+    assert(max-vector >= current);
     std::uniform_int_distribution< unsigned long > pad(current, max-vector);
     unsigned long tmp = pad(enger);
     if (tmp % vector != 0) {
