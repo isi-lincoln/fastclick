@@ -180,7 +180,6 @@ std::vector<XORProto*> sub_encode(
         return {};
     }
 
-
     // adds random data to the end of each packet
     long total_length;
     if (ps < 0){
@@ -356,7 +355,7 @@ void XORMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
     //DEBUG_PRINT("encode begin\n");
     if (pb.size() != _symbols) {
         fprintf(stderr, "number of packets should be equal to symbols.\n");
-        return {};
+        return;
     }
 
     const unsigned char* nh = pb[0]->network_header();
@@ -377,12 +376,6 @@ void XORMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
 
     std::vector<XORProto*> xor_pkts = sub_encode(pb, _symbols, longest, _mtu, _pkt_size);
     send_packets(xor_pkts, nh, mh, dst);
-
-    /*
-    DEBUG_PRINT("encoding packet(s) took: %s\n", 
-               (Timestamp::now_steady() - pb[0]->timestamp_anno()).unparse().c_str()
-    );
-    */
 
     // clear up data
     for (auto i: xor_pkts) { delete i; }
