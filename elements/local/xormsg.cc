@@ -103,6 +103,9 @@ char* populate_packet(void* buffer, long length) {
 // generate a random number between current and max and make sure modulo vector size
 long padding_to_add(unsigned long max, unsigned long current, unsigned long vector) {
     DEBUG_PRINT("max: %lu, current: %lu, vector: %lu\n", max, current, vector);
+    if (current == max){
+        return max;
+    }
     std::uniform_int_distribution< unsigned long > pad(current, max);
     unsigned long tmp = pad(eng);
     if (tmp % vector != 0) {
@@ -351,6 +354,13 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
 
 void XORMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
     //DEBUG_PRINT("encode begin\n");
+    if (pb.size() != _symbols) {
+        fprintf(stderr, "number of packets should be equal to symbols.\n");
+        return {};
+    }
+
+    const unsigned char* nh = pb[0]->network_header();
+    const unsigned char* mh = pb[0]->mac_header();
 
     std::vector<unsigned long> lengths;
     //DEBUG_PRINT("encode size: %lu\n", pb.size());
@@ -366,7 +376,7 @@ void XORMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
     //DEBUG_PRINT("longest element: %lu\n", longest);
 
     std::vector<XORProto*> xor_pkts = sub_encode(pb, _symbols, longest, _mtu, _pkt_size);
-    send_packets(xor_pkts, pb[0]->network_header(), pb[0]->mac_header(), dst);
+    send_packets(xor_pkts, nh, mh, dst);
 
     /*
     DEBUG_PRINT("encoding packet(s) took: %s\n", 
@@ -651,7 +661,7 @@ void XORMsg::push_batch(int ports, PacketBatch *pb){
             if ( vp.size() % _symbols != 0 ) {
                 int pkts_to_generate =  _symbols - (vp.size() % _symbols);
                 for (int i = 0; i < pkts_to_generate; i++) {
-                    unsigned long temp_length = vp[0]->length();
+                    long temp_length = vp[0]->length();
                     WritablePacket *pkt = Packet::make(temp_length);
                     const click_ip *iph = vp[0]->ip_header();
                     unsigned long iplen = iph->ip_hl << 2;
