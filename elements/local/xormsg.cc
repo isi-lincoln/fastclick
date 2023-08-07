@@ -51,6 +51,10 @@ std::mt19937 eng(seed);
 //bloom_filter filter;
 // packet queue (dst_host, symbol, arrival time)
 
+
+// vector can either be 16 byte for SSE/SSSE or 32 for AVX/2
+unsigned int vector_length = 16;
+
 unsigned long long get_64_rand() {
     std::uniform_int_distribution< unsigned long long > uid(0, ULLONG_MAX);
     return uid(eng);
@@ -80,7 +84,10 @@ XORMsg::~XORMsg() { };
 FILE* FD = fopen("/dev/urandom", "rb");
 
 // create a memory buffer the size of length filled by urand
-char* populate_packet(void* buffer, unsigned long long length) {
+char* populate_packet(void* buffer, long length) {
+    if (length <= 0) {
+        return (char*)buffer;
+    }
     if ( FD == NULL) {
         fprintf(stderr, "failed to open file.\n");
         exit(1);
@@ -170,11 +177,9 @@ std::vector<XORProto*> sub_encode(
         return {};
     }
 
-    // vector can either be 16 byte for SSE/SSSE or 32 for AVX/2
-    unsigned int vector_length = 16;
 
     // adds random data to the end of each packet
-    unsigned long total_length;
+    long total_length;
     if (ps < 0){
         total_length = padding_to_add(mtu, longest, vector_length);
     } else if (ps == 0) {
@@ -195,7 +200,6 @@ std::vector<XORProto*> sub_encode(
 
     //DEBUG_PRINT("array: %u, longest: %lu, with padding: %lu\n", pb->count(), longest, total_length);
 
-    // TODO: create arbitrary for size symbol, when symbol != 3
     unsigned long al = pb[0]->length();
     unsigned long bl = pb[1]->length();
     unsigned long cl = pb[2]->length();
@@ -293,6 +297,11 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     _timer = timer;
     _mtu = mtu;
 
+    if (mtu % vector_length != 0) {
+        fprintf(stderr, "mtu must be a factor of simd vector: %u, try 1504", vector_length);
+        return -1;
+    }
+
     /*
      * TODO: We need to manage in/out interfaces in relation to symbols.
      * Symbols should be greater than adversary's control, and more than 2.
@@ -376,7 +385,8 @@ void XORMsg::encode(int ports, unsigned long dst, std::vector<Packet*> pb) {
 void XORMsg::decode(int ports, std::vector<Packet*> pb) {
     //DEBUG_PRINT("decode begin\n");
     if (pb.size() != _symbols){
-        DEBUG_PRINT("not correct number of packets to decode\n");
+        //DEBUG_PRINT("not correct number of packets to decode\n");
+        fprintf(stderr, "not the correct number of packets to decode\n");
         return;
     }
 
