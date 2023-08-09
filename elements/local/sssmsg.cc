@@ -312,6 +312,11 @@ bool SSSMsg::run_task(Task *task) {
 void SSSMsg::encrypt2(Packet *p) {
     DEBUG_PRINT("encrypt 2\n");
     unsigned long total_length;
+    if (p->length() > _mtu) {
+        fprintf(stderr, "packet of size %d larger than mtu %d. dropped.\n");
+        p->kill();
+        return;
+    }
     if (_pkt_size < 0){
         std::uniform_int_distribution< unsigned long > pad(p->length(), _mtu);
         total_length = pad(eng2);
