@@ -100,6 +100,7 @@ char* populate_packet(void* buffer, long length) {
     return (char*)buffer;
 }
 
+// TODO: may require something here for mtu to be vector aligned
 // generate a random number between current and max and make sure modulo vector size
 long padding_to_add(unsigned long max, unsigned long current, unsigned long vector) {
     DEBUG_PRINT("max: %lu, current: %lu, vector: %lu\n", max, current, vector);
@@ -299,8 +300,9 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
     _timer = timer;
     _mtu = mtu;
 
-    if (mtu % vector_length != 0) {
-        fprintf(stderr, "mtu must be a factor of simd vector: %u, try 1504", vector_length);
+    if (pkt_size > 0 && pkt_size % vector_length != 0){
+    //if (mtu % vector_length != 0) {
+        fprintf(stderr, "packet size must be a factor of simd vector: %u, try 1504", vector_length);
         return -1;
     }
 
