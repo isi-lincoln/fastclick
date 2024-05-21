@@ -86,6 +86,7 @@ UPF::simple_action(Packet* p)
             }
 
             click_ip *iph = (click_ip *) q->data();
+            iph->ip_len = (( click_ip *)p->data())->ip_len+buf.length();
             iph->ip_sum = 0;
             iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
 
