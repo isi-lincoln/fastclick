@@ -61,9 +61,7 @@ class UPF : public SimpleElement<UPF> { public:
 
     unsigned _nbytes;
     unsigned _maxlength;
-    bool _zero;
     bool _verbose;
-    bool _usc;
 };
 
 CLICK_ENDDECLS

@@ -40,19 +40,12 @@ UPF::configure(Vector<String>& conf, ErrorHandler* errh)
 {
     _nbytes = 0;
     _maxlength = 0;
-    _zero = true;
-    _usc = false;
     _verbose = false;
     return Args(conf, this, errh)
         .read_p("LENGTH", _nbytes)
-        .read("ZERO", _zero)
-        .read("USC", _usc)
         .read("MAXLENGTH", _maxlength)
         .read("VERBOSE", _verbose)
         .complete();
-
-    if (_zero && _usc)
-        return errh->error("ZERO and USC are exclusive.");
 
     return 0;
 }
@@ -75,17 +68,8 @@ UPF::simple_action(Packet* p)
 
     if (nput) {
         WritablePacket* q;
-        if (_zero) {
-            q = p->put(nput);
-            if (!q) {
-                return 0;
-            }
-            memset(q->end_data() - nput, 0, nput);
-        }
-        if (_usc) {
-            std::string buf = "USC/ISI-UPF";
-            q = p->put(buf.length());
-        }
+        std::string buf = "USC/ISI-UPF";
+        q = p->put(buf.length());
 
         if (p->has_mac_header()) {
             const click_ether *mch = (click_ether *) p->data();
