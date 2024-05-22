@@ -1,0 +1,52 @@
+FROM ubuntu:22.04
+
+LABEL git="github.com/isi-lincoln/fastclick.git"
+
+RUN apt-get update  \
+        && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        build-essential \
+        meson \
+        pkg-config \
+        libnuma-dev \
+        python3-pyelftools \
+        libpcap-dev \
+        libclang-dev \
+        python3-pip \
+        git \
+        vim \
+        dpdk \
+        make \
+        clang \
+        && apt-get clean
+
+#FROM tbarbette/fastclick-dpdk:generic
+#RUN apk update && apk add git
+#RUN  ln -s /bin/zcat /bin/gzcat
+
+RUN git clone https://github.com/isi-lincoln/fastclick /fastclick
+
+WORKDIR /fastclick
+RUN touch b
+
+RUN git checkout lt-dev
+RUN git submodule update --init --recursive
+
+WORKDIR /fastclick/include/cryptopp
+RUN make -j `nproc` static
+#RUN cp libcryptopp.a ../..
+
+WORKDIR /fastclick/include/gferasure/src
+RUN make -j `nproc` 
+WORKDIR /fastclick/elements/local/gferasure/src
+RUN make -j `nproc` 
+
+WORKDIR /fastclick
+RUN ./configure --enable-bound-port-transfer --enable-local --enable-all-elements CFLAGS="-O3" CXXFLAGS="-std=c++11 -O3"
+
+RUN sed -i 's/^LIBS = .*/LIBS = -lnuma -lcryptopp -L\/fastclick\/include\/cryptopp -lgferasure -L\/fastclick\/include\/gferasure\/src -I$(top_builddir)\/include\/gferasure\/src\/ -Wl,-rpath=$(top_builddir)\/include\/gferasure\/src\/ `$(CLICK_BUILDTOOL) --otherlibs` $(ELEMENT_LIBS)/g' userlevel/Makefile
+
+RUN  make -j `nproc` && make -j `nproc` elemlist
+
+ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/fastclick/include/gferasure/src/"
+
+#CMD /fastclick/bin/click ${CLICKCONFIG}

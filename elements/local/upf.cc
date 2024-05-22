@@ -1,22 +1,3 @@
-// -*- c-basic-offset: 4 -*-
-/*
- * upf.{cc,hh} -- extends packet length
- * Eddie Kohler, Tom Barbette
- *
- * Copyright (c) 2004 Regents of the University of California
- * Copyright (c) 2019 KTH Royal Institute of Technology
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, subject to the conditions
- * listed in the Click LICENSE file. These conditions include: you must
- * preserve this copyright notice, and you cannot mention the copyright
- * holders in advertising related to the Software without their permission.
- * The Software is provided WITHOUT ANY WARRANTY, EXPRESS OR IMPLIED. This
- * notice is a summary of the Click LICENSE file; the license in that file is
- * legally binding.
- */
-
 #include <string>
 #include <stdio.h>
 #include <iostream>
@@ -31,6 +12,7 @@
 #include <clicknet/udp.h> // udp header checksum
 #include <clicknet/ether.h>
 #include <include/click/packet.hh> // pkt make
+#include <click/string.hh>
 CLICK_DECLS
 
 UPF::UPF()
@@ -40,13 +22,15 @@ UPF::UPF()
 int
 UPF::configure(Vector<String>& conf, ErrorHandler* errh)
 {
-    _nbytes = 0;
+    _encode = false;
     _maxlength = 0;
     _verbose = false;
+
     return Args(conf, this, errh)
-        .read_p("LENGTH", _nbytes)
+        .read_p("ENCODE", _encode)
         .read_p("SA", _sa)
         .read_p("DA", _da)
+        .read("PREFIX", _prefix)
         .read("MAXLENGTH", _maxlength)
         .read("VERBOSE", _verbose)
         .complete();
@@ -57,22 +41,12 @@ UPF::configure(Vector<String>& conf, ErrorHandler* errh)
 Packet*
 UPF::simple_action(Packet* p)
 {
-    uint32_t nput;
-    if (unlikely(_nbytes))
-        nput = p->length() < _nbytes ? _nbytes - p->length() : 0;
-    else
-        nput = EXTRA_LENGTH_ANNO(p);
-    if (unlikely(_maxlength) && unlikely(_maxlength < (nput + p->length())))
-    {
-        if (unlikely(_verbose))
-            click_chatter("Tried a too long UPF: %i + %i > %i -> adding only %i bytes",
-                    p->length(), nput, _maxlength, _maxlength - p->length());
-         nput = _maxlength - p->length();
-    }
+    WritablePacket* q;
+    std::string buf = "USC/ISI-UPF";
+    printf("encoding: %d\n", _encode);
 
-    if (nput) {
-        WritablePacket* q;
-        std::string buf = "USC/ISI-UPF";
+
+    if (_encode) {
         q = p->put(buf.length());
         memcpy((void*)(q->end_data()-buf.length()), (void*)buf.c_str(), buf.length());
 
@@ -90,19 +64,20 @@ UPF::simple_action(Packet* p)
                 return p;
             }
 
+            printf("in encode: doing work\n");
 
             //const click_ip *iph = q->ip_header();
             click_ip *iph = q->ip_header();
             //click_ip *iph = (click_ip *)q->data();
-            std::cout << "src: " << IPAddress(iph->ip_src).unparse().c_str() << "\n";
-            std::cout << "dst: " << IPAddress(iph->ip_dst).unparse().c_str() << "\n";
+            //std::cout << "src: " << IPAddress(iph->ip_src).unparse().c_str() << "\n";
+            //std::cout << "dst: " << IPAddress(iph->ip_dst).unparse().c_str() << "\n";
             if (iph->ip_dst != IPAddress(_da)) {
-                    return p;
+                return p;
             }
-            std::cout << "new src: " << IPAddress(_sa).unparse().c_str() << "\n";
-            std::cout << "new dst: " << IPAddress(_da).unparse().c_str() << "\n";
+            //std::cout << "new src: " << IPAddress(_sa).unparse().c_str() << "\n";
+            //std::cout << "new dst: " << IPAddress(_da).unparse().c_str() << "\n";
 
-            printf("size change %d -> %ld\n", ntohs(iph->ip_len), ntohs(iph->ip_len)+buf.length());
+            //printf("size change %d -> %ld\n", ntohs(iph->ip_len), ntohs(iph->ip_len)+buf.length());
             iph->ip_len = htons(ntohs(iph->ip_len)+buf.length());
             printf("new length %d\n", ntohs(iph->ip_len));
 
@@ -111,35 +86,113 @@ UPF::simple_action(Packet* p)
 
                 unsigned hlen = iph->ip_hl << 2;
                 unsigned ilen = ntohs(iph->ip_len);
-                printf("data in icmp2: %d\n", ilen - hlen);
                 click_icmp *icmph = (click_icmp *) (((char *)iph) + hlen);
-                printf("before checksum: %x\n", icmph->icmp_cksum);
 
                 icmph->icmp_cksum = 0;
                 // so this should be correct - 29 bytes, 10 for data, 11 for mine, 8 for icmp header
                 icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, ilen - hlen);
-                printf("after checksum: %x\n", icmph->icmp_cksum);
             } else if (iph->ip_p == IP_PROTO_TCP) {
 
             } else if (iph->ip_p == IP_PROTO_UDP) {
 
             }
-            printf("proto: %d\n", iph->ip_p);
 
             iph->ip_sum = 0;
             iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
-            // click_update_in_cksum
-            //ip->ip_sum = 0;
-            //ip->ip_sum = click_in_cksum((unsigned char *)ip, ip->ip_hl << 2);
-            //q->set_ip_header(ip, sizeof(click_ip));
+        }
+    // decode
+    } else {
+        if (p->has_mac_header()) {
+            const click_ether *mch = (click_ether *) p->data();
+            const unsigned char *mh = p->mac_header();
 
+            if (htons(mch->ether_type) != ETHERTYPE_IP) {
+                fprintf(stderr, "handling non-ipv4 packet: %x\n", htons(mch->ether_type));
+                return p;
+            }
 
-            //q->set_ip_header(iph, sizeof(click_ip));
+            if (!p->has_network_header()) {
+                fprintf(stderr, "dont know how to handle this packet (no L3).\n");
+                return p;
+            }
 
+            printf("in decode: doing work\n");
+
+            char tmp[buf.length()];
+            memcpy((void*)tmp, (void*)(p->end_data()-buf.length()), buf.length());
+            std::string tmp_str(tmp);
+
+            printf("last bytes: %s ~~~ %s\n", tmp_str.c_str(), buf.c_str());
+
+            int key = strncmp(tmp_str.c_str(),buf.c_str(), buf.length());
+            if (key == 0) {
+                printf("one of ours\n");
+
+                q = p->push(0);
+                click_ip *iph = q->ip_header();
+                if (iph->ip_dst != IPAddress(_da)) {
+                    printf("not correct: %s ~~ %s\n", IPAddress(iph->ip_dst).unparse().c_str(), IPAddress(_da).unparse().c_str());
+                    return p;
+                }
+
+                q->take(buf.length());
+
+                printf("size change %d -> %ld\n", ntohs(iph->ip_len), ntohs(iph->ip_len)-buf.length());
+                iph->ip_len = htons(ntohs(iph->ip_len)-buf.length());
+
+                printf("proto: %d\n", iph->ip_p);
+                if (iph->ip_p == IP_PROTO_ICMP) {
+                    unsigned hlen = iph->ip_hl << 2;
+                    unsigned ilen = ntohs(iph->ip_len);
+                    printf("data in icmp2: %d\n", ilen - hlen);
+                    click_icmp *icmph = (click_icmp *) (((char *)iph) + hlen);
+                    printf("before checksum: %x\n", icmph->icmp_cksum);
+
+                    icmph->icmp_cksum = 0;
+                    icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, ilen - hlen);
+                    printf("after checksum: %x\n", icmph->icmp_cksum);
+                } else if (iph->ip_p == IP_PROTO_TCP) {
+
+                } else if (iph->ip_p == IP_PROTO_UDP) {
+
+                }
+                printf("proto: %d\n", iph->ip_p);
+
+                iph->ip_sum = 0;
+                iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
+
+                printf("prefix: %s\n", IPAddress(_prefix).unparse().c_str());
+
+                if (IPAddress(_prefix) != IPAddress("0.0.0.0")) {
+                        printf("not empty\n");
+                        for (int i = 4; i < 254; i++) { // 4 to 254
+                                //WritablePacket* tpkt = q->uniqueify();
+                                WritablePacket* tpkt = Packet::make(q->data(), q->length());
+                                tpkt = q;
+                                click_ip *tiph = tpkt->ip_header();
+                                char tmp[100];
+                                sprintf(tmp, "0.0.0.%d", i);
+                                IPAddress x = IPAddress(tmp);
+                                IPAddress update = IPAddress(_prefix) | IPAddress(x);
+                                tiph->ip_dst = IPAddress(update);
+                                tiph->ip_sum = 0;
+                                tiph->ip_sum = click_in_cksum((unsigned char *)tiph, sizeof(click_ip));
+                                output(0).push(tpkt->clone());
+                                printf("sent packet to %s\n", IPAddress(update).unparse().c_str());
+                        }
+                }
+
+            } else {
+                return p;
+            }
+
+        } else {
+            return p;
         }
 
-        p = q;
     }
+
+    p = q;
 
     SET_EXTRA_LENGTH_ANNO(p, 0);
     return p;
