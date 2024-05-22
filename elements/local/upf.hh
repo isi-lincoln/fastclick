@@ -2,6 +2,7 @@
 #ifndef CLICK_UPF_HH
 #define CLICK_UPF_HH
 #include <click/batchelement.hh>
+#include <clicknet/ip.h>
 CLICK_DECLS
 
 /*
@@ -43,17 +44,18 @@ If the final length would be higher than this, the packet will be truncated to M
 =back
 
 =a Truncate
+*
 */
 
 class UPF : public SimpleElement<UPF> { public:
 
     UPF() CLICK_COLD;
 
-    const char *class_name() const override		{ return "UPF"; }
-    const char *port_count() const override		{ return PORTS_1_1; }
+    const char *class_name() const override             { return "UPF"; }
+    const char *port_count() const override             { return PORTS_1_1; }
 
     int configure(Vector<String> &, ErrorHandler *) CLICK_COLD;
-    bool can_live_reconfigure() const		{ return true; }
+    bool can_live_reconfigure() const           { return true; }
 
     Packet *simple_action(Packet *);
 
@@ -62,6 +64,8 @@ class UPF : public SimpleElement<UPF> { public:
     unsigned _nbytes;
     unsigned _maxlength;
     bool _verbose;
+    struct in_addr _sa;
+    struct in_addr _da;
 };
 
 CLICK_ENDDECLS

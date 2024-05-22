@@ -18,6 +18,8 @@
  */
 
 #include <string>
+#include <stdio.h>
+#include <iostream>
 #include <click/config.h>
 #include "upf.hh"
 #include <click/packet_anno.hh>
@@ -43,6 +45,8 @@ UPF::configure(Vector<String>& conf, ErrorHandler* errh)
     _verbose = false;
     return Args(conf, this, errh)
         .read_p("LENGTH", _nbytes)
+        .read_p("SA", _sa)
+        .read_p("DA", _da)
         .read("MAXLENGTH", _maxlength)
         .read("VERBOSE", _verbose)
         .complete();
@@ -70,6 +74,7 @@ UPF::simple_action(Packet* p)
         WritablePacket* q;
         std::string buf = "USC/ISI-UPF";
         q = p->put(buf.length());
+        memcpy((void*)(q->end_data()-buf.length()), (void*)buf.c_str(), buf.length());
 
         if (p->has_mac_header()) {
             const click_ether *mch = (click_ether *) p->data();
@@ -85,10 +90,51 @@ UPF::simple_action(Packet* p)
                 return p;
             }
 
-            click_ip *iph = (click_ip *) q->data();
-            iph->ip_len = (( click_ip *)p->data())->ip_len+buf.length();
+
+            //const click_ip *iph = q->ip_header();
+            click_ip *iph = q->ip_header();
+            //click_ip *iph = (click_ip *)q->data();
+            std::cout << "src: " << IPAddress(iph->ip_src).unparse().c_str() << "\n";
+            std::cout << "dst: " << IPAddress(iph->ip_dst).unparse().c_str() << "\n";
+            if (iph->ip_dst != IPAddress(_da)) {
+                    return p;
+            }
+            std::cout << "new src: " << IPAddress(_sa).unparse().c_str() << "\n";
+            std::cout << "new dst: " << IPAddress(_da).unparse().c_str() << "\n";
+
+            printf("size change %d -> %ld\n", ntohs(iph->ip_len), ntohs(iph->ip_len)+buf.length());
+            iph->ip_len = htons(ntohs(iph->ip_len)+buf.length());
+            printf("new length %d\n", ntohs(iph->ip_len));
+
+            printf("proto: %d\n", iph->ip_p);
+            if (iph->ip_p == IP_PROTO_ICMP) {
+
+                unsigned hlen = iph->ip_hl << 2;
+                unsigned ilen = ntohs(iph->ip_len);
+                printf("data in icmp2: %d\n", ilen - hlen);
+                click_icmp *icmph = (click_icmp *) (((char *)iph) + hlen);
+                printf("before checksum: %x\n", icmph->icmp_cksum);
+
+                icmph->icmp_cksum = 0;
+                // so this should be correct - 29 bytes, 10 for data, 11 for mine, 8 for icmp header
+                icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, ilen - hlen);
+                printf("after checksum: %x\n", icmph->icmp_cksum);
+            } else if (iph->ip_p == IP_PROTO_TCP) {
+
+            } else if (iph->ip_p == IP_PROTO_UDP) {
+
+            }
+            printf("proto: %d\n", iph->ip_p);
+
             iph->ip_sum = 0;
             iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
+            // click_update_in_cksum
+            //ip->ip_sum = 0;
+            //ip->ip_sum = click_in_cksum((unsigned char *)ip, ip->ip_hl << 2);
+            //q->set_ip_header(ip, sizeof(click_ip));
+
+
+            //q->set_ip_header(iph, sizeof(click_ip));
 
         }
 
