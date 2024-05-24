@@ -27,12 +27,12 @@ UPF::configure(Vector<String>& conf, ErrorHandler* errh)
     _verbose = false;
 
     return Args(conf, this, errh)
-        .read_p("ENCODE", _encode) // true for add/pad, false to remove pad
-        .read_p("SA", _sa) // source address, not used
-        .read_p("DA", _da) // destination to check if the packet is for us
-        .read("PREFIX", _prefix) // prefix explained where used - dhcp
-        .read("MAXLENGTH", _maxlength) // not used
-        .read("VERBOSE", _verbose) // not used
+        .read_p("ENCODE", _encode)
+        .read_p("SA", _sa)
+        .read_p("DA", _da)
+        .read("PREFIX", _prefix)
+        .read("MAXLENGTH", _maxlength)
+        .read("VERBOSE", _verbose)
         .complete();
 
     return 0;
@@ -66,13 +66,20 @@ UPF::simple_action(Packet* p)
 
             printf("in encode: doing work\n");
 
+            //const click_ip *iph = q->ip_header();
             click_ip *iph = q->ip_header();
-            // if the destination is not for us, then just send the packet back out
+            //click_ip *iph = (click_ip *)q->data();
+            //std::cout << "src: " << IPAddress(iph->ip_src).unparse().c_str() << "\n";
+            //std::cout << "dst: " << IPAddress(iph->ip_dst).unparse().c_str() << "\n";
             if (iph->ip_dst != IPAddress(_da)) {
                 return p;
             }
+            //std::cout << "new src: " << IPAddress(_sa).unparse().c_str() << "\n";
+            //std::cout << "new dst: " << IPAddress(_da).unparse().c_str() << "\n";
 
+            //printf("size change %d -> %ld\n", ntohs(iph->ip_len), ntohs(iph->ip_len)+buf.length());
             iph->ip_len = htons(ntohs(iph->ip_len)+buf.length());
+            printf("new length %d\n", ntohs(iph->ip_len));
 
             printf("proto: %d\n", iph->ip_p);
             if (iph->ip_p == IP_PROTO_ICMP) {
@@ -81,17 +88,15 @@ UPF::simple_action(Packet* p)
                 unsigned ilen = ntohs(iph->ip_len);
                 click_icmp *icmph = (click_icmp *) (((char *)iph) + hlen);
 
-                // thou must set the chksum to 0 before calculating the checksum!
                 icmph->icmp_cksum = 0;
+                // so this should be correct - 29 bytes, 10 for data, 11 for mine, 8 for icmp header
                 icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, ilen - hlen);
             } else if (iph->ip_p == IP_PROTO_TCP) {
-                    // TODO
 
             } else if (iph->ip_p == IP_PROTO_UDP) {
-                    // TODO
+
             }
 
-            // recompute the ip layer checksum as we've added data
             iph->ip_sum = 0;
             iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
         }
@@ -119,70 +124,80 @@ UPF::simple_action(Packet* p)
 
             printf("last bytes: %s ~~~ %s\n", tmp_str.c_str(), buf.c_str());
 
-            // check to see if the packet has our key and if so, we need to remove
             int key = strncmp(tmp_str.c_str(),buf.c_str(), buf.length());
             if (key == 0) {
                 printf("one of ours\n");
 
-                // this is my hacky copy, but can remove this later
                 q = p->push(0);
                 click_ip *iph = q->ip_header();
                 if (iph->ip_dst != IPAddress(_da)) {
-                    printf("not correct: %s ~~ %s\n", IPAddress(iph->ip_dst).unparse().c_str(), IPAddress(_da).unparse().c_str());
+		    printf("not correct: %s ~~ %s\n", IPAddress(iph->ip_dst).unparse().c_str(), IPAddress(_da).unparse().c_str());
                     return p;
                 }
 
-                // so we know it is our packet, so we are removing our key
                 q->take(buf.length());
 
                 printf("size change %d -> %ld\n", ntohs(iph->ip_len), ntohs(iph->ip_len)-buf.length());
                 iph->ip_len = htons(ntohs(iph->ip_len)-buf.length());
 
-                // same thing in reverse, we need to recompute checksums
                 printf("proto: %d\n", iph->ip_p);
                 if (iph->ip_p == IP_PROTO_ICMP) {
                     unsigned hlen = iph->ip_hl << 2;
                     unsigned ilen = ntohs(iph->ip_len);
+                    printf("data in icmp2: %d\n", ilen - hlen);
                     click_icmp *icmph = (click_icmp *) (((char *)iph) + hlen);
+                    printf("before checksum: %x\n", icmph->icmp_cksum);
 
                     icmph->icmp_cksum = 0;
                     icmph->icmp_cksum = click_in_cksum((unsigned char *)icmph, ilen - hlen);
+                    printf("after checksum: %x\n", icmph->icmp_cksum);
                 } else if (iph->ip_p == IP_PROTO_TCP) {
+                    click_tcp *tcph = (click_tcp*) p->tcp_header();
+                    unsigned plen = ntohs(iph->ip_len) - (iph->ip_hl << 2);
+                    unsigned csum;
 
+                    if (!p->has_transport_header() || plen < sizeof(click_tcp) || plen > (unsigned)p->transport_length()){
+		        return p;
+		    }
+
+                    unsigned off = tcph->th_off << 2;
+                    if (off < sizeof(click_tcp)) {
+                        tcph->th_off = sizeof(click_tcp) >> 2;
+		    }
+                    else if (off > plen && !IP_ISFRAG(iph)) {
+                        tcph->th_off = plen >> 2;
+		    }
+
+                    tcph->th_sum = 0;
+                    csum = click_in_cksum((unsigned char *)tcph, plen);
+                    tcph->th_sum = click_in_cksum_pseudohdr(csum, iph, plen);
                 } else if (iph->ip_p == IP_PROTO_UDP) {
 
                 }
-                printf("proto: %d\n", iph->ip_p);
 
                 iph->ip_sum = 0;
                 iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
 
-                // so this hellish piece of code is because the gnbsim is getting a dhcp'd
-                // address over the n6 interface, and we will have no idea what it is
-                // a priori, so we can either create a map when we send the packet out
-                // which requires memory/mutexes, etc, and I have 1-2 days to put this together
-                // so we are going to yolo it, with a prefix range.
-                //
-                // lots to improve here...
-                printf("prefix: %s\n", IPAddress(_prefix).unparse().c_str());
-                if (IPAddress(_prefix) != IPAddress("0.0.0.0")) {
-                        printf("not empty\n");
-                        for (int i = 4; i < 254; i++) { // 4 to 254
-                                //WritablePacket* tpkt = q->uniqueify();
-                                WritablePacket* tpkt = Packet::make(q->data(), q->length());
-                                tpkt = q;
-                                click_ip *tiph = tpkt->ip_header();
-                                char tmp[100];
-                                sprintf(tmp, "0.0.0.%d", i);
-                                IPAddress x = IPAddress(tmp);
-                                IPAddress update = IPAddress(_prefix) | IPAddress(x);
-                                tiph->ip_dst = IPAddress(update);
-                                tiph->ip_sum = 0;
-                                tiph->ip_sum = click_in_cksum((unsigned char *)tiph, sizeof(click_ip));
-                                output(0).push(tpkt->clone());
-                                printf("sent packet to %s\n", IPAddress(update).unparse().c_str());
-                        }
-                }
+		printf("prefix: %s\n", IPAddress(_prefix).unparse().c_str());
+
+		if (IPAddress(_prefix) != IPAddress("0.0.0.0")) {
+			//printf("not empty\n");
+			for (int i = 4; i < 254; i++) { // 4 to 254
+				//WritablePacket* tpkt = q->uniqueify();
+				WritablePacket* tpkt = Packet::make(q->data(), q->length());
+				tpkt = q;
+				click_ip *tiph = tpkt->ip_header();
+				char tmp[100];
+				sprintf(tmp, "0.0.0.%d", i);
+				IPAddress x = IPAddress(tmp);
+				IPAddress update = IPAddress(_prefix) | IPAddress(x);
+				tiph->ip_dst = IPAddress(update);
+				tiph->ip_sum = 0;
+				tiph->ip_sum = click_in_cksum((unsigned char *)tiph, sizeof(click_ip));
+				output(0).push(tpkt->clone());
+			        //printf("sent packet to %s\n", IPAddress(update).unparse().c_str());
+			}
+		}
 
             } else {
                 return p;
