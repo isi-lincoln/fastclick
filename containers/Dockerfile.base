@@ -23,10 +23,11 @@ RUN apt-get update  \
 #RUN apk update && apk add git
 #RUN  ln -s /bin/zcat /bin/gzcat
 
+ARG CACHEBUST=0
 RUN git clone https://github.com/isi-lincoln/fastclick /fastclick
+#COPY . /fastclick 
 
 WORKDIR /fastclick
-RUN touch b
 
 RUN git checkout lt-dev
 RUN git submodule update --init --recursive

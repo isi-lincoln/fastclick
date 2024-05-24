@@ -151,41 +151,28 @@ std::string SSSMsg::RecoverData(int threshold, std::vector<std::string> shares) 
 
 // allow the user to configure the shares and threshold amounts
 int SSSMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
-    uint8_t shares;
-    uint8_t threshold;
-    uint8_t function;
-    uint32_t timer;
-    uint32_t mtu;
-    int pkt_size; // in bytes
     if (Args(conf, this, errh)
-        .read_mp("SHARES", shares) // positional
-        .read_mp("THRESHOLD", threshold) // positional
-        .read_mp("FUNCTION", function) // positional
-        .read_mp("TIMER", timer) // positional
-        .read_mp("MTU", mtu) // positional
-        .read_mp("PACKET", pkt_size) // positional
+        .read_mp("SHARES", _shares) // positional
+        .read_mp("THRESHOLD", _threshold) // positional
+        .read_mp("FUNCTION", _function) // positional
+        .read_mp("TIMER", _timer) // positional
+        .read_mp("MTU", _mtu) // positional
+        .read_mp("PACKET", _pkt_size) // positional
         .complete() < 0){
             return -1;
     }
 
     // shares must be greater than or equal to threshold
-    if (threshold >= shares) {
+    if (_threshold >= _shares) {
         // print error
         return -1;
     }
 
     // number of shares must be greater than 1. Otherwise we are not sending packets.
     // number of threshold must be greater than 2. Otherwise we are not encoding.
-    if (shares < 1 || threshold < 2) {
+    if (_shares < 1 || _threshold < 2) {
         return -1;
     }
-
-    _shares = shares;
-    _threshold = threshold;
-    _function = function;
-    _timer = timer;
-    _mtu = mtu;
-    _pkt_size = pkt_size;
 
     int _threads = click_max_cpu_ids();
 
@@ -224,7 +211,7 @@ void ip_checksum_update_sss(WritablePacket *p) {
     iph->ip_sum = click_in_cksum((unsigned char *)iph, sizeof(click_ip));
 }
 
-int check_sss_packet_header(Packet *p, long mtu) {
+int check_sss_packet_header(Packet *p, uint32_t mtu) {
     if (p->length() > 8000) {
         fprintf(stderr, "packet is too large for link\n");
         return -1;
