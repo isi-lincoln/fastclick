@@ -282,25 +282,18 @@ std::vector<XORProto*> sub_encode(
 
 // allow the user to configure the shares and threshold amounts
 int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
-    uint8_t symbols;
-    uint8_t function;
-    unsigned long timer; 
-    unsigned long mtu; 
-    int pkt_size;
     if (Args(conf, this, errh)
-        .read_mp("SYMBOLS", symbols) // positional
-        .read_mp("PURPOSE", function) // positional
-        .read_mp("TIMER", timer) // positional
-        .read_mp("MTU", mtu) // positional
-        .read_mp("PACKET", pkt_size) // positional
+        .read_mp("SYMBOLS", _symbols) // positional
+        .read_mp("PURPOSE", _function) // positional
+        .read_mp("TIMER", _timer) // positional
+        .read_mp("MTU", _mtu) // positional
+        .read_mp("PACKET", _pkt_size) // positional
         .complete() < 0){
             fprintf(stderr, "Click configure failed.\n");
             return -1;
     }
-    _timer = timer;
-    _mtu = mtu;
 
-    if (pkt_size > 0 && pkt_size % vector_length != 0){
+    if (_pkt_size > 0 && _pkt_size % vector_length != 0){
     //if (mtu % vector_length != 0) {
         fprintf(stderr, "packet size must be a factor of simd vector: %u, try 1504", vector_length);
         return -1;
@@ -314,15 +307,11 @@ int XORMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
      * it makes life simple with coming up with equations that can be solved
      * without clear text.  May still need to inject noise regardless.
      */
-    if (symbols < 3) {
+    if (_symbols < 3) {
         // print error
         fprintf(stderr, "Click configure: too few symbols.\n");
         return -1;
     }
-
-    _symbols = symbols;
-    _function = function;
-    _pkt_size = pkt_size;
 
     _threads = click_max_cpu_ids();
 
@@ -584,7 +573,7 @@ int XORMsg::initialize(ErrorHandler *errh) {
 }
 
 
-int check_packet_header(Packet *p, long mtu) {
+int check_packet_header(Packet *p, uint32_t mtu) {
     if (p->length() > 8000) {
         fprintf(stderr, "packet is too large for link\n");
         return -1;

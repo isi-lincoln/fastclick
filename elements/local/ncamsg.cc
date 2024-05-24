@@ -433,23 +433,16 @@ std::vector<NCAProto*> sub_encode(
 
 // allow the user to configure the shares and threshold amounts
 int NCAMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
-    uint8_t links;
-    uint8_t function;
-    unsigned long timer; 
-    unsigned long mtu; // in bytes
-    int pkt_size; // in bytes
     if (Args(conf, this, errh)
-        .read_mp("LINKS", links) // positional
-        .read_mp("PURPOSE", function) // positional
-        .read_mp("TIMER", timer) // positional
-        .read_mp("MTU", mtu) // positional
-        .read_mp("PACKET", pkt_size) // positional
+        .read_mp("LINKS", _links) // positional
+        .read_mp("PURPOSE", _function) // positional
+        .read_mp("TIMER", _timer) // positional
+        .read_mp("MTU", _mtu) // positional
+        .read_mp("PACKET", _pkt_size) // positional
         .complete() < 0){
             fprintf(stderr, "Click configure failed.\n");
             return -1;
     }
-    _timer = timer;
-    _mtu = mtu;
 
     /*
      * TODO: We need to manage in/out interfaces in relation to symbols.
@@ -459,15 +452,11 @@ int NCAMsg::configure(Vector<String> &conf, ErrorHandler *errh) {
      * it makes life simple with coming up with equations that can be solved
      * without clear text.  May still need to inject noise regardless.
      */
-    if (links < 2) {
+    if (_links < 2) {
         // print error
         fprintf(stderr, "Click configure: too few symbols.\n");
         return -1;
     }
-
-    _links = links;
-    _function = function;
-    _pkt_size = pkt_size;
 
     _threads = click_max_cpu_ids();
 
@@ -678,7 +667,7 @@ int NCAMsg::initialize(ErrorHandler *errh) {
 }
 
 
-int ensure_packet_header(Packet *p, long mtu) {
+int ensure_packet_header(Packet *p, unsigned long mtu) {
     // TODO: packet length bounds check.
     if (p->length() > 8000) {
         fprintf(stderr, "packet is too large for link\n");
