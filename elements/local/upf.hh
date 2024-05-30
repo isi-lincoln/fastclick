@@ -2,7 +2,8 @@
 #ifndef CLICK_UPF_HH
 #define CLICK_UPF_HH
 #include <click/batchelement.hh>
-#include <clicknet/ip.h> // ip header 
+#include <clicknet/ip.h>
+#include <click/sync.hh>
 CLICK_DECLS
 
 /*
@@ -47,6 +48,8 @@ If the final length would be higher than this, the packet will be truncated to M
 */
 
 class UPF : public SimpleElement<UPF> { public:
+
+    Spinlock dlock;
 
     UPF() CLICK_COLD;
 
